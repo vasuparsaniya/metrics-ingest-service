@@ -116,6 +116,14 @@ export class IngestRepository {
       RETURNING series_id::text, ts::text`,
       [ids, times, values],
     );
+    // DO NOTHING skips every existing identity, including concurrent conflicts.
+    // An equal row count proves all deduplicated candidates were newly inserted.
+    if (inserted.rowCount === groups.length) {
+      response.accepted += groups.length;
+      for (const group of groups)
+        response.duplicates += group.indexes.length - 1;
+      return;
+    }
     // Classify with ordinality, avoiding timestamp conversion through JavaScript Date.
     const stored = await client.query<{
       ordinal: string;

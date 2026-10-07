@@ -332,6 +332,14 @@ The following evidence is required by PDF §3, §5 and §8 and is preserved here
 
 ### Diagnostics overhead experiment and rollback
 
+The next optimization under verification is a fresh-insert fast path: when the
+measurement INSERT reports that every deduplicated candidate was inserted, skip
+the subsequent classification SELECT and derive accepted/internal-duplicate
+counts from the candidate groups. Mixed or all-existing batches retain the
+original classification query. Validation, request replay, exact values and the
+single transaction are unchanged. Performance gains are not yet measured; use
+the diagnostics-removed run below as the baseline.
+
 All three runs below used 2,000,000 points, 5,000-point requests and eight writers
 on the same machine described below. All A–G correctness checks passed in each
 run. Throughput, row count and memory targets passed, but both latency targets
