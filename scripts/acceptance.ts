@@ -8,6 +8,7 @@ import { artifact, createManifest, readManifest } from './load/manifest';
 import { idleReads, requireEmptyMeasurements, runLoad } from './load/runner';
 import { summarize, latency, degradation } from './load/metrics';
 import { terminationSemantics } from './load/rss';
+import { generateAcceptanceReport } from './load/report';
 import {
   concurrentScenario,
   partialScenario,
@@ -32,6 +33,7 @@ export async function main(): Promise<void> {
   const runId = randomUUID();
   const directory = resolve(settings.reportDir, `acceptance-${runId}`);
   const reportPath = resolve(directory, 'acceptance.json');
+  let markdownPath: string | undefined;
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   let caseServer: Awaited<ReturnType<typeof startServer>> | undefined;
   let casePool: Pool | undefined;
@@ -121,6 +123,7 @@ export async function main(): Promise<void> {
     await artifact(reportPath, {
       kind: 'acceptance',
       runId,
+      database: new URL(databaseUrl).pathname.slice(1),
       measuredAt: new Date().toISOString(),
       termination: terminationSemantics(),
       results,
@@ -129,11 +132,13 @@ export async function main(): Promise<void> {
       retainedDatabases:
         'Primary, cases, and restart databases are retained; no data was deleted.',
     });
+    markdownPath = await generateAcceptanceReport(reportPath);
   }
   console.log(
     JSON.stringify({
       event: 'acceptance_report',
       path: reportPath,
+      markdownPath,
       passed: failure === null,
     }),
   );

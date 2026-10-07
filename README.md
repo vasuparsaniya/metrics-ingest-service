@@ -225,6 +225,18 @@ npm run acceptance -- --points 5000 --samples 20 --database metrics_benchmark_ac
 
 Acceptance A/B retain the primary load database. C–E run in another automatically created dedicated case database so they do not change A's exact row count. G uses another fresh dedicated database and the same total generator size as A: its first batch is held mid-insert by a database lock, termination is requested after PostgreSQL confirms an in-flight insert is waiting, the target batch/key rollback is verified, then the API restarts and retries the original manifest. It finishes with exact full-data reconciliation and another unchanged replay. If the lock was not observed or the emergency SIGKILL fallback was needed, the scenario fails rather than claiming success.
 
+### Readable run summary
+
+Each acceptance run generates `REPORT.md` beside `acceptance.json`. Start with that Markdown file: it lists workload/machine identity, performance targets and actual measurements, A–G correctness results, pending independent checks, and links to JSON evidence. The terminal prints `markdownPath`, including for failed runs that reach report generation. Correctness success is separate from performance compliance; small/replay runs do not certify fresh two-million-point targets. New reports record the database name without credentials. Older JSON may show `Database: Not recorded`.
+
+Generate the same summary for an existing acceptance JSON without rerunning any API or database work:
+
+```bash
+npm run report -- --input "artifacts/acceptance-RUN-ID/acceptance.json"
+```
+
+The generator never overwrites an existing `REPORT.md` or modifies JSON. Strategy/index comparisons and unit/E2E suites remain separate evidence; their completion is not inferred by the acceptance summary. Reports are generated after measurements, not during timed requests.
+
 ### Platform support and restart semantics
 
 The tooling uses Node APIs for HTTP, timing, paths, and RSS measurement and is designed for Linux, macOS, and Windows with Node.js 20+ and local PostgreSQL/Docker Compose. Setup invokes npm's JavaScript CLI through the current Node executable, not a Windows `.cmd` file. Use the same npm commands above on each OS; configure connection settings in `.env`, and quote manifest paths containing spaces. Only Linux has been exercised locally; Windows/macOS execution is not claimed as verified.
