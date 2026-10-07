@@ -3,13 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Pool } from 'pg';
 import { applyMigrations } from '../scripts/migrate';
+import { terminationSemantics } from '../scripts/load/rss';
 import {
   ServerProcess,
   startServer,
   stopServer,
 } from './helpers/server-process';
 
-describe('SIGTERM mid-batch against real PostgreSQL', () => {
+describe(`${terminationSemantics().mode} mid-batch against real PostgreSQL`, () => {
   it('rolls back unfinished rows and key, then retries exactly once after process restart', async () => {
     const databaseUrl = process.env.TEST_DATABASE_URL;
     if (!databaseUrl || databaseUrl === process.env.DATABASE_URL)

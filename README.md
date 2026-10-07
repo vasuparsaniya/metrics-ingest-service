@@ -14,7 +14,7 @@ A backend service for ingesting timestamped measurements in batches and querying
 
 ## Project status
 
-All required API routes and business-schema migrations are implemented. Unit tests and real-Postgres API tests cover replay, concurrent duplicates, partial failure, late arrivals, and SIGTERM/restart. Full-volume load scripts, benchmark scenarios, index comparisons, and measured performance results are still pending; no throughput or latency target is claimed yet.
+All required API routes and business-schema migrations are implemented. Unit tests and real-Postgres API tests cover replay, concurrent duplicates, partial failure, late arrivals, and SIGTERM/restart. Runnable load, benchmark, A–G acceptance, and write-strategy/index-comparison scripts are now implemented and verified with small datasets. The full two-million-point measurements and evidence-driven optimization remain pending; no assignment throughput or latency target is claimed yet.
 
 Work is on `feat/ingest`; the submission must include an open pull request into `main`.
 
@@ -36,7 +36,7 @@ The example credentials and token are for local development. `.env` is ignored b
 
 ## Authentication and health
 
-All endpoints, including probes, require the configured static bearer token. This is our current interpretation of the assignment's authentication requirement.
+All endpoints, including probes, require the configured static bearer token. This is our current interpretation of the assignment's authentication requirement. Manual curl examples below use Bash syntax; the npm verification/load commands are the shell-independent way to exercise the service.
 
 ```bash
 curl -H 'Authorization: Bearer local-development-token' http://localhost:3000/healthz
@@ -132,7 +132,7 @@ npm run build
 
 Pure numeric, timestamp, grouping, hashing, and configuration tests run without database mocks. End-to-end tests start the application themselves; no separately running NestJS process is needed.
 
-Use `npm run format` to format files. After building, `npm start` runs the compiled application. Ctrl+C or SIGTERM closes the HTTP server and connection pool through NestJS shutdown hooks.
+Use `npm run format` to format files. After building, `npm start` runs the compiled application. Ctrl+C or POSIX SIGTERM closes the HTTP server and connection pool through NestJS shutdown hooks. Native Windows process termination is not the same as POSIX graceful shutdown; see the platform notes below.
 
 The initial pool limit is 12, with bounded connection and statement timeouts. Its final size and behavior under full load must be measured before claiming it meets assignment targets.
 
@@ -168,11 +168,72 @@ curl --fail-with-body -G "$METRICS_BASE_URL/v1/series/$METRICS_SERIES_ID/points"
 curl --fail-with-body "$METRICS_BASE_URL/v1/stats" -H "Authorization: Bearer $METRICS_TOKEN"
 ```
 
-## Assignment load test and benchmark — pending implementation
+## Assignment load test and benchmark
 
-PDF sections 3, 4, 5, 6.1, and 8 require runnable load/benchmark scripts, not manual Postman requests or only correctness tests. **Those scripts are not implemented yet. There is currently no full-load or benchmark command to run.** `npm run test:e2e` runs real-database correctness tests, but does not establish the two-million-point performance targets. The smoke commands above do not satisfy that requirement either.
+PDF sections 3, 4, 5, 6.1, and 8 require runnable load/benchmark scripts, not manual Postman requests or only correctness tests. The commands below implement those runs. `npm run test:e2e` and the smoke commands above are correctness checks, not evidence of the two-million-point performance targets.
 
-The scripts must eventually provide one documented command from a clean clone to a loaded database and a separate command to a benchmark result. They must generate data automatically and use the API; do not insert the load directly into PostgreSQL. Run against local Docker PostgreSQL, not a hosted database. Use a fresh, dedicated benchmark database so manual smoke-test points do not contaminate the exact final count; do not clear existing development data or its Docker volume.
+### Clean clone to loaded database
+
+With Node.js/npm and Docker Compose installed, run from the repository root:
+
+```bash
+npm run load:setup
+```
+
+This installs locked dependencies, starts local Docker PostgreSQL, uses `DATABASE_URL` (Docker default: `metrics`), applies migrations, builds and launches a compiled API child, creates eight series through HTTP, and posts 2,000,000 points in 5,000-point batches with eight writers. It measures concurrent reads and API RSS, reconciles exact counts/sums and all hourly buckets, prints the manifest/report paths, then stops its own API process. It uses `.env.example` defaults when values are absent and respects existing environment/`.env` values without overwriting files. For local isolation run `npm run load:setup -- --database metrics_benchmark`.
+
+The load generator writes through the API, not direct SQL. No separately running API is required. The application and PostgreSQL are the only service processes; the scripts are clients/measurement tools. Run against local Docker PostgreSQL, not a hosted database. Default host PostgreSQL port is `5433`.
+
+For an already configured workspace:
+
+```bash
+npm run db:up
+npm run load
+```
+
+These are **full-load commands** against your configured database's real `measurements` table. For a smaller isolated local verification:
+
+```bash
+npm run load -- --points 40000 --database metrics_benchmark_smoke
+```
+
+All four commands default to `DATABASE_URL`; `--database <name>` overrides only its database name, preserving credentials, host, port and connection options. The obsolete `BENCHMARK_DATABASE_URL` variable is ignored. Explicit names must be ASCII identifiers of 1–63 characters. Missing explicitly selected local databases can be created (requires database-creation permission); the default connects to an existing configured database without administrative access. Automatic creation is refused on remote servers. A cold run refuses existing measurements; nothing is deleted. Select a fresh local database for another cold run. Use the same `--database` override on every command for a given manifest. Manifests verify series ownership before replay. Avoid other API writes during measurements.
+
+### Replay and separate benchmark command
+
+Replace the example path with the manifest printed by the load command. The commands respectively run identical replay, idle-query/replay benchmarking, and strategy/index comparisons:
+
+```bash
+npm run load -- --manifest "artifacts/RUN-ID/manifest.json"
+npm run benchmark -- --manifest "artifacts/RUN-ID/manifest.json"
+npm run compare -- --manifest "artifacts/RUN-ID/manifest.json"
+```
+
+For the isolated example above, append `--database metrics_benchmark_smoke` to each command. Load/replay write through the API; comparison creates retained experimental tables in the selected database.
+
+`benchmark` first checks reconciliation, measures 100 sequential requests each for latest and the fully loaded thirty-day hourly query, then measures replay and concurrent reads. It reports p95 degradation relative to the original cold-load report; a replay is not substituted for cold-write scenario F. Use `--samples 20` for a small verification (minimum 20). `compare` benchmarks UNNEST versus parameterized multi-row VALUES and an optional covering index on three isolated tables, saving actual `EXPLAIN (ANALYZE, BUFFERS)` for the exact shared API bucket SQL. The primary-key constraint stays intact. No production indexes are dropped or added.
+
+### All acceptance scenarios
+
+Choose a fresh full run, an existing loaded manifest, or a small correctness-only verification:
+
+```bash
+npm run acceptance
+npm run acceptance -- --manifest "artifacts/RUN-ID/manifest.json"
+npm run acceptance -- --points 5000 --samples 20 --database metrics_benchmark_acceptance_smoke
+```
+
+Acceptance A/B retain the primary load database. C–E run in another automatically created dedicated case database so they do not change A's exact row count. G uses another fresh dedicated database and the same total generator size as A: its first batch is held mid-insert by a database lock, termination is requested after PostgreSQL confirms an in-flight insert is waiting, the target batch/key rollback is verified, then the API restarts and retries the original manifest. It finishes with exact full-data reconciliation and another unchanged replay. If the lock was not observed or the emergency SIGKILL fallback was needed, the scenario fails rather than claiming success.
+
+### Platform support and restart semantics
+
+The tooling uses Node APIs for HTTP, timing, paths, and RSS measurement and is designed for Linux, macOS, and Windows with Node.js 20+ and local PostgreSQL/Docker Compose. Setup invokes npm's JavaScript CLI through the current Node executable, not a Windows `.cmd` file. Use the same npm commands above on each OS; configure connection settings in `.env`, and quote manifest paths containing spaces. Only Linux has been exercised locally; Windows/macOS execution is not claimed as verified.
+
+The benchmark starts the API with a strictly typed, benchmark-only preload module. During measurement windows, it samples `process.memoryUsage.rss()` in that API process and sends values through Node IPC to the load client. The ordinary API bootstrap does not load it. No endpoint, runtime service, or dependency is added. PID/window checks prevent another process or stale readings from contaminating a report.
+
+Linux/macOS scenario G uses POSIX SIGTERM. On native Windows, Node terminates a child forcefully rather than delivering a POSIX graceful-shutdown signal. Reports explicitly label this as `windows-forced-termination` and set `posixSigtermScenario: false`; the test still checks transactional rollback, restart, and unchanged replay, but does not prove the PDF's POSIX SIGTERM behavior. Windows users should run the POSIX acceptance test under WSL2 or another POSIX environment for that evidence. See Node's [RSS API](https://nodejs.org/api/process.html#processmemoryusagerss) and [child termination documentation](https://nodejs.org/api/child_process.html#subprocesskillsignal).
+
+Reports, manifests, aggregate snapshots, and payload-free API logs live under ignored `artifacts/`. Every report gets a new filename; previous results are not overwritten. Databases and experiment tables are retained for inspection. **Full acceptance loads a second two-million-point dataset for G; comparison retains three more dataset copies. Allow additional disk/WAL beyond a single-load estimate.** No reset/drop/delete command is run automatically. Do not run benchmarks concurrently with each other, correctness tests, or unrelated workloads when recording final results.
 
 Required execution sequence and evidence:
 
@@ -186,13 +247,15 @@ Required execution sequence and evidence:
 | F — Reads during writes   | While A is actively writing, repeatedly call both latest and the 30-day hourly-bucket endpoint. Report each p95 and degradation against idle reads. Latest target: p95 ≤ 50 ms; bucket target: p95 ≤ 150 ms. Also measure the 30-day hourly query after the table is fully loaded.                            |
 | G — Restart               | SIGTERM the application during the full load, restart, and resume/replay with the same generated data and keys. Verify exact final count, no duplicates, and no half-written batches. The current restart test covers a small interrupted batch, not this full-load scenario.                                 |
 
-The generator must persist a reproducible manifest containing series IDs, generation parameters, stable request keys, and exact expected per-series counts/sums. Reuse it for replay and restart; creating new series would not test replay. Decimal expected sums must not use JavaScript floating-point arithmetic. Retry 429 responses using `Retry-After` and the unchanged body/key; report retries and failures instead of silently discarding them. Keep C–E scenario data separate from A's counted dataset.
+The generator persists a reproducible manifest containing series IDs, generation parameters, and exact expected per-series counts/sums; stable request keys derive from its run ID and batch index. Reuse it for replay and restart; creating new series would not test replay. Values are signed integer cents rendered as decimal strings, and expected sums use BigInt arithmetic. Points span thirty days deterministically, with unique millisecond timestamps within each series. At most one batch per writer is generated in memory.
 
-Monitor the **application process** RSS throughout the load (target: below 512 MB); Docker database memory is not a substitute. Report CPU, RAM, PostgreSQL version, Docker usage, actual throughput, replay duration, row counts, both latency percentiles, and peak RSS. No measurements have been recorded yet. Report misses honestly with diagnosed bottlenecks.
+429/503 and network failures have bounded retries with unchanged bodies/keys. Every attempt records its duration and status; replay throughput reports zero newly inserted points/sec rather than summing cached accepted counts. Reports also show processed-input throughput and replay wall time. Reader loops do not retry, so failed reads remain visible. Average verification follows the documented finite PostgreSQL NUMERIC division contract; count/sum/min/max/last and replay equality are independently checked without floating-point value arithmetic.
+
+The managed **application process** RSS is sampled every 100 ms using its own `process.memoryUsage.rss()` over IPC (target: below 512 MB); Docker database/generator memory is not substituted. Measurement includes immediate and final samples while the child is alive. Reports include PID, source, sampling count, final-sample availability, and telemetry errors; missing telemetry is null, never invented zero memory. A terminated child retains its readings without waiting for a final sample it cannot send. Report CPU, RAM, PostgreSQL version, Docker usage, actual throughput, replay duration, row counts, both latency percentiles, and peak sampled RSS. Percentiles use nearest rank; successful and failed attempt durations/statuses are reported separately. Cold-load readers rotate across all eight series, run independently, and issue a request per category with a 100 ms pause. The range has 720 hourly buckets per series. A small run's metrics are verification evidence only. No full-scale measurements have been recorded yet.
 
 ### Reconciliation SQL
 
-Run this against the benchmark database and compare every row to the generator's expected per-series count/sum manifest. This query alone does not prove reconciliation until that manifest exists and is compared.
+The load script automatically executes equivalent SQL restricted to manifest series and compares every count and exact sum to generated expectations. To inspect the primary benchmark database manually, run this query and compare it with the manifest. Experiment tables and C–G case databases are outside these business-table totals.
 
 ```sql
 SELECT s.id::text AS series_id, s.name,
@@ -204,6 +267,17 @@ GROUP BY s.id, s.name
 ORDER BY s.id;
 ```
 
-### Remaining benchmark evidence
+### Index rationale and remaining measured evidence
 
-The runnable benchmark must compare the chosen write strategy with at least one alternative; capture real `EXPLAIN (ANALYZE, BUFFERS)` output before/after indexing work; show a slow query improved with both timings; and measure ingest with and without the indexes being evaluated. Preserve the point-identity constraint in the correctness-preserving baseline and clearly describe any separate experimental schema. These results and actual script commands must be added here before submission. No fabricated results or placeholder npm commands are provided.
+| Index                                    | Purpose and write cost                                                                                          |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `series_pkey (id)`                       | Series identity, lookup, and referenced-key integrity. Updated on series creation, not each measurement insert. |
+| `measurements_pkey (series_id, ts)`      | Required point identity, range scans, and backward latest lookup. Maintained on each new point.                 |
+| `ingest_requests_pkey (idempotency_key)` | Atomic key claim and replay lookup. Maintained once per new batch request.                                      |
+| `schema_migrations_pkey (name)`          | Migration bookkeeping only; not part of normal ingest traffic.                                                  |
+
+The comparison report includes real lookup plans, bucket plans, relation/index sizes, insert timings with/without the optional covering index, and twenty measured query samples per indexed configuration. It also disables index/bitmap/index-only scans locally in a rolled-back read transaction to show a no-index-access plan without dropping correctness constraints. That diagnostic has a 30-second timeout; a timeout is recorded as a measured failure, not fabricated EXPLAIN output.
+
+Strategy comparisons are **insert-kernel microbenchmarks** with identical point constraints, batch scope, eight writers, and ordered identities. They exclude HTTP validation, payload hashing, request records, and post-insert classification; their throughput is not the API's end-to-end throughput. The production load report supplies that measurement. Experiments run sequentially, so cache/order noise requires repeated runs before choosing an optimization.
+
+Still required before submission: run the full two-million-point commands on the agreed database; paste the actual machine/results table and relevant raw plans here; identify a genuinely slow query and an evidence-backed improvement with both timings; diagnose target misses; and decide whether any measured optional index is worth its write/storage cost. Tooling availability is not a claim that these final measurement/optimization deliverables are complete.

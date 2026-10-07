@@ -19,6 +19,11 @@
     "db:up": "docker compose up -d --wait",
     "db:migrate": "ts-node scripts/migrate.ts",
     "db:migrate:test": "ts-node scripts/migrate.ts --test",
+    "load": "npm run build && ts-node scripts/load.ts",
+    "benchmark": "npm run build && ts-node scripts/benchmark.ts",
+    "acceptance": "npm run build && ts-node scripts/acceptance.ts",
+    "compare": "ts-node scripts/compare.ts",
+    "load:setup": "npm ci && ts-node scripts/setup-load.ts",
     "check": "npm run typecheck && npm run lint && npm run test && npm run test:e2e && npm run build"
   },
   "dependencies": {
