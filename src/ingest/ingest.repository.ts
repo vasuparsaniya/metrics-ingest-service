@@ -1,7 +1,8 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
-import { groupPoints, isRecord, validatePoints } from './ingest.validation';
+import { groupPoints, isRecord } from './ingest.validation';
+import { validatePointsCooperatively } from './ingest.processing';
 import { IngestResponse, PointGroup } from './ingest.types';
 
 function savedResponse(value: unknown): IngestResponse {
@@ -63,7 +64,7 @@ export class IngestRepository {
           replayed: true,
         };
       }
-      const { valid, rejected } = validatePoints(rows);
+      const { valid, rejected } = await validatePointsCooperatively(rows);
       const ids = [...new Set(valid.map((point) => point.seriesId))];
       const series = await client.query<{ id: string }>(
         'SELECT id::text FROM series WHERE id = ANY($1::bigint[]) ORDER BY id FOR KEY SHARE',

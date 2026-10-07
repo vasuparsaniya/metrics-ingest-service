@@ -24,6 +24,12 @@ Reordering points while reusing a key is a content mismatch. Preserve original s
 
 The application generates the hash; the client does not supply it. Do not scan stored measurements to compare request bodies or store the original measurement payload for this purpose.
 
+Canonical hashing streams arrays in 250-element slices and yields between slices
+to reduce uninterrupted CPU work. The canonical byte sequence and SHA-256 digest
+are unchanged, including extra fields, Unicode, JSON escaping, array order and
+sorted object keys. Existing database request hashes remain compatible; no key
+reset, schema migration or expiration is introduced.
+
 ## Processing and replay
 
 | Situation                           | Outcome                                                                             |

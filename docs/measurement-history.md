@@ -1,6 +1,6 @@
 # Measurement history
 
-Recorded from retained local JSON evidence on 2026-10-07; no benchmarks rerun for this documentation update. PDF §3/§4 require machine, throughput, replay wall time, read latency, RSS and A–G evidence; §5 requires strategy/index costs and raw SQL plans; §6 requires reconciliation; §8 places submission results in the root README.
+Recorded from retained local JSON evidence on 2026-10-07. Includes the submitted baseline, subsequent diagnostic run, and fresh full-scale cooperative-processing acceptance run. PDF §3/§4 require machine, throughput, replay wall time, read latency, RSS and A–G evidence; §5 requires strategy/index costs and raw SQL plans; §6 requires reconciliation; §8 places submission results in the root README.
 
 ## Acceptance runs
 
@@ -16,6 +16,9 @@ Recorded from retained local JSON evidence on 2026-10-07; no benchmarks rerun fo
 | 16:06:19              | e97f84ec-7df1-4b87-87bd-bc261ca664c1 | 2000000 |       30631.27 |  65.29 |    15.11 |              470.79 |             399.52 |  234.36 | Fail      |
 | 16:17:21              | 0cb69e6b-3c5c-44ab-8037-1708f197c435 |   40000 |       23456.87 |   1.71 |     0.33 |              528.42 |              30.01 |  137.24 | Pass      |
 | 16:22:55              | 8971f065-fd23-4b64-a3bc-17a4b739c1a7 | 2000000 |       31172.38 |  64.16 |    15.11 |              479.64 |             210.68 |  227.09 | Pass      |
+| 17:02:53              | 75533ece-d3bd-4f16-8edf-396843e46261 | 2000000 |       34136.67 |  58.59 |    12.79 |              381.54 |             288.33 |  241.99 | Pass      |
+| 17:32:28              | 5c28e0eb-699b-4294-8d21-0d71e376ff8b | 2000000 |       26289.45 |  76.08 |    20.07 |              214.40 |             196.11 |  228.75 | Pass      |
+| 17:42:23              | f62a9552-6d44-4bbf-bc8c-7ef115704bb5 | 2000000 |       30659.48 |  65.23 |    11.15 |              177.75 |             174.00 |  242.34 | Pass      |
 
 Execution Pass does not mean performance targets passed. Small datasets cannot establish full-scale compliance. The 1625ae7b run reused existing data (fresh throughput zero), not a clean cold load. The 40557202 failure was a missing compiled entry point during restart; the e97f84ec failure was the restart lock observer timing out. Later 8971f065 full-scale execution passed restart verification, but still failed both latency targets. Missing numbers are not inferred.
 
@@ -388,6 +391,302 @@ Points: 2000000; batch size: 5000; writers: 8; mode: cold.
 - Latest p95, idle: 5.34 ms.
 - p95 degradation, latest / buckets: 8890.50% / 321.69%.
 - Replay newly stored rows: 0; processed input: 132385.19 points/sec. Cached accepted responses are not new inserts.
+
+## Scenarios A–G
+
+| Scenario | Check                                            | Correctness/evidence |
+| -------- | ------------------------------------------------ | -------------------- |
+| A        | Exact counts/sums and bucket aggregates          | Pass                 |
+| B        | Replay leaves counts and aggregates unchanged    | Pass                 |
+| C        | Concurrent request/point deduplication           | Pass                 |
+| D        | Partial success and indexed rejection accounting | Pass                 |
+| E        | Late data changes buckets, not newest timestamp  | Pass                 |
+| F        | Read latency measurements collected              | Pass                 |
+| G        | Restart, rollback, resume and unchanged replay   | Pass                 |
+
+Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
+
+## Machine
+
+- cpu: Intel(R) Core(TM) i3-7020U CPU @ 2.30GHz.
+- logicalCpus: 4.
+- ramBytes: 12442411008.
+- os: linux 6.8.0-51-generic.
+- node: v20.18.0.
+- postgres: PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86\_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit.
+- postgresJit: off.
+- postgresInDocker: true.
+- poolMax: 12.
+
+## Errors and pending verification
+
+Acceptance error: None.
+Load errors: \[\].
+
+- Unit/API integration suites and clean-clone reproducibility: Not measured by this report; verify separately.
+- Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
+
+</details>
+
+### Cooperative processing comparison
+
+Before: 75533ece-d3bd-4f16-8edf-396843e46261, database `metrics_benchmark_diagnostic_01`, 2026-10-07T17:02:53.384Z.
+After: 5c28e0eb-699b-4294-8d21-0d71e376ff8b, database `metrics_benchmark_cooperative_01`, 2026-10-07T17:32:28.970Z.
+Both used 2,000,000 points, 5,000-point requests, 8 writers, a 12-connection
+API pool, JIT off, local Docker PostgreSQL and 100 idle samples per read endpoint.
+
+| Measurement                                 |                Before |                 After |
+| ------------------------------------------- | --------------------: | --------------------: |
+| Latest HTTP p95 during writes               |             381.54 ms |             214.40 ms |
+| Latest server-handler p95, cold-load window |             190.51 ms |             101.67 ms |
+| Latest server-handler p50, cold-load window |              98.86 ms |              17.56 ms |
+| Fresh HTTP write throughput                 |   34136.67 points/sec |   26289.45 points/sec |
+| Cold load wall time                         |               58.59 s |               76.08 s |
+| Replay wall time                            |               12.79 s |               20.07 s |
+| Bucket HTTP p95, idle                       |             288.33 ms |             196.11 ms |
+| Bucket HTTP p95 during writes               |             731.52 ms |             602.69 ms |
+| Latest HTTP p95, idle                       |              14.45 ms |               6.88 ms |
+| Peak sampled API RSS                        |            241.99 MiB |            228.75 MiB |
+| Latest requests serviced during cold writes |                   165 |                   395 |
+| Bucket requests serviced during cold writes |                    98 |                   192 |
+| Stored rows after cold load / replay        | 2,000,000 / 2,000,000 | 2,000,000 / 2,000,000 |
+| A–G execution/recovery checks               |                  Pass |                  Pass |
+
+Latest end-to-end p95 decreased 43.81%.
+Write throughput decreased 22.99%, but
+remains above the 20,000 points/sec target. Both API latency targets still fail.
+
+This is a before/after observation, not an isolated CPU-cost experiment. Readers
+retain the same 100 ms pause but service more requests when latency falls, so the
+after run also performs more read work. Sequential fresh databases, cache state
+and machine scheduling add variation. Do not attribute the whole throughput
+difference or the idle bucket change solely to yielding.
+
+Server-handler metrics were calculated from existing `api-load.log` events:
+select latest completions between the first fresh ingest's estimated handler start
+and the 400th fresh ingest's completion, then use nearest-rank percentiles. This
+gives 164 before and 394 after handler samples; it excludes the initial latest
+request outside that window. The interceptor starts after request parsing/routing.
+Its duration includes pool waiting, SQL round-trip time and callback scheduling,
+not SQL execution alone. Client/server samples are not matched by request ID;
+their percentiles must not be subtracted to invent a network/wait breakdown.
+
+Verification: `npm run check` passed 74 unit tests and 23 real-database/child-process
+tests (97 total), typecheck, lint and build. Yield regressions initially failed
+on synchronous hashing/validation, then passed after the change. Golden legacy
+hash bytes and chunk boundaries are tested; full acceptance retained exact
+count/sum reconciliation, partial success, concurrent duplicates and SIGTERM recovery.
+
+Next diagnosis: separately time pool acquisition, latest SQL round trips, event-loop
+delay, remaining grouping/classification/pg processing, and load-client event-loop
+delay. The measured improvement does not establish the cause of every remaining
+millisecond. No schema, SQL, pool or dependency was changed.
+
+<details>
+<summary>75533ece-d3bd-4f16-8edf-396843e46261: 2000000 points</summary>
+
+# Acceptance report
+
+Acceptance execution: Pass. Performance: Fail.
+
+The execution flag covers completed correctness checks, not all performance targets. This is an acceptance summary, not certification of every assignment deliverable.
+
+Run: 75533ece-d3bd-4f16-8edf-396843e46261. Measured at (UTC): 2026-10-07T17:02:53.384Z.
+Database: metrics\_benchmark\_diagnostic\_01.
+Points: 2000000; batch size: 5000; writers: 8; mode: cold.
+
+## Performance targets
+
+| Checkpoint                     |              Actual | Target             | Result |
+| ------------------------------ | ------------------: | ------------------ | ------ |
+| Stored rows                    |             2000000 | Exactly 2,000,000  | Pass   |
+| Fresh insertion throughput     | 34136.67 points/sec | ≥20,000 points/sec | Pass   |
+| Latest p95 during fresh writes |           381.54 ms | ≤50 ms             | Fail   |
+| 30-day hourly bucket p95, idle |           288.33 ms | ≤150 ms            | Fail   |
+| API sampled peak RSS           |          241.99 MiB | <512 MiB           | Pass   |
+
+## Additional measurements
+
+- Write duration: 58.59 seconds.
+- Bucket p95 during fresh writes: 731.52 ms.
+- Latest p95, idle: 14.45 ms.
+- p95 degradation, latest / buckets: 2540.93% / 153.71%.
+- Replay newly stored rows: 0; processed input: 156327.44 points/sec. Cached accepted responses are not new inserts.
+
+## Scenarios A–G
+
+| Scenario | Check                                            | Correctness/evidence |
+| -------- | ------------------------------------------------ | -------------------- |
+| A        | Exact counts/sums and bucket aggregates          | Pass                 |
+| B        | Replay leaves counts and aggregates unchanged    | Pass                 |
+| C        | Concurrent request/point deduplication           | Pass                 |
+| D        | Partial success and indexed rejection accounting | Pass                 |
+| E        | Late data changes buckets, not newest timestamp  | Pass                 |
+| F        | Read latency measurements collected              | Pass                 |
+| G        | Restart, rollback, resume and unchanged replay   | Pass                 |
+
+Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
+
+## Machine
+
+- cpu: Intel(R) Core(TM) i3-7020U CPU @ 2.30GHz.
+- logicalCpus: 4.
+- ramBytes: 12442411008.
+- os: linux 6.8.0-51-generic.
+- node: v20.18.0.
+- postgres: PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86\_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit.
+- postgresJit: off.
+- postgresInDocker: true.
+- poolMax: 12.
+
+## Errors and pending verification
+
+Acceptance error: None.
+Load errors: \[\].
+
+- Unit/API integration suites and clean-clone reproducibility: Not measured by this report; verify separately.
+- Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
+
+</details>
+
+<details>
+<summary>5c28e0eb-699b-4294-8d21-0d71e376ff8b: 2000000 points</summary>
+
+# Acceptance report
+
+Acceptance execution: Pass. Performance: Fail.
+
+The execution flag covers completed correctness checks, not all performance targets. This is an acceptance summary, not certification of every assignment deliverable.
+
+Run: 5c28e0eb-699b-4294-8d21-0d71e376ff8b. Measured at (UTC): 2026-10-07T17:32:28.970Z.
+Database: metrics\_benchmark\_cooperative\_01.
+Points: 2000000; batch size: 5000; writers: 8; mode: cold.
+
+## Performance targets
+
+| Checkpoint                     |              Actual | Target             | Result |
+| ------------------------------ | ------------------: | ------------------ | ------ |
+| Stored rows                    |             2000000 | Exactly 2,000,000  | Pass   |
+| Fresh insertion throughput     | 26289.45 points/sec | ≥20,000 points/sec | Pass   |
+| Latest p95 during fresh writes |           214.40 ms | ≤50 ms             | Fail   |
+| 30-day hourly bucket p95, idle |           196.11 ms | ≤150 ms            | Fail   |
+| API sampled peak RSS           |          228.75 MiB | <512 MiB           | Pass   |
+
+## Additional measurements
+
+- Write duration: 76.08 seconds.
+- Bucket p95 during fresh writes: 602.69 ms.
+- Latest p95, idle: 6.88 ms.
+- p95 degradation, latest / buckets: 3015.59% / 207.31%.
+- Replay newly stored rows: 0; processed input: 99633.87 points/sec. Cached accepted responses are not new inserts.
+
+## Scenarios A–G
+
+| Scenario | Check                                            | Correctness/evidence |
+| -------- | ------------------------------------------------ | -------------------- |
+| A        | Exact counts/sums and bucket aggregates          | Pass                 |
+| B        | Replay leaves counts and aggregates unchanged    | Pass                 |
+| C        | Concurrent request/point deduplication           | Pass                 |
+| D        | Partial success and indexed rejection accounting | Pass                 |
+| E        | Late data changes buckets, not newest timestamp  | Pass                 |
+| F        | Read latency measurements collected              | Pass                 |
+| G        | Restart, rollback, resume and unchanged replay   | Pass                 |
+
+Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
+
+## Machine
+
+- cpu: Intel(R) Core(TM) i3-7020U CPU @ 2.30GHz.
+- logicalCpus: 4.
+- ramBytes: 12442411008.
+- os: linux 6.8.0-51-generic.
+- node: v20.18.0.
+- postgres: PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86\_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit.
+- postgresJit: off.
+- postgresInDocker: true.
+- poolMax: 12.
+
+## Errors and pending verification
+
+Acceptance error: None.
+Load errors: \[\].
+
+- Unit/API integration suites and clean-clone reproducibility: Not measured by this report; verify separately.
+- Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
+
+</details>
+
+### Cooperative processing repeat-run validation
+
+Three completed runs used 2,000,000 points, 5,000-point batches, 8 writers,
+a 12-connection pool and 100 idle samples per read endpoint.
+
+| Measurement                          |   Before optimization | First cooperative run |     Cooperative rerun |
+| ------------------------------------ | --------------------: | --------------------: | --------------------: |
+| Latest p95 during writes             |             381.54 ms |             214.40 ms |             177.75 ms |
+| Bucket p95, idle                     |             288.33 ms |             196.11 ms |             174.00 ms |
+| Bucket p95 during writes             |             731.52 ms |             602.69 ms |             544.86 ms |
+| Latest p95, idle                     |              14.45 ms |               6.88 ms |               5.38 ms |
+| Fresh insertion throughput           |   34136.67 points/sec |   26289.45 points/sec |   30659.48 points/sec |
+| Cold load wall time                  |               58.59 s |               76.08 s |               65.23 s |
+| Replay wall time                     |               12.79 s |               20.07 s |               11.15 s |
+| API peak sampled RSS                 |            241.99 MiB |            228.75 MiB |            242.34 MiB |
+| Stored rows after cold load / replay | 2,000,000 / 2,000,000 | 2,000,000 / 2,000,000 | 2,000,000 / 2,000,000 |
+| A–G correctness/recovery checks      |                  Pass |                  Pass |                  Pass |
+
+Run identifiers, in column order:
+
+- Before: `75533ece-d3bd-4f16-8edf-396843e46261`, `metrics_benchmark_diagnostic_01`, 2026-10-07T17:02:53.384Z.
+- First cooperative run: `5c28e0eb-699b-4294-8d21-0d71e376ff8b`, `metrics_benchmark_cooperative_01`, 2026-10-07T17:32:28.970Z.
+- Cooperative rerun: `f62a9552-6d44-4bbf-bc8c-7ef115704bb5`, `metrics_benchmark_cooperative_03`, 2026-10-07T17:42:23.789Z.
+
+Latest p95 changed from **381.54 → 214.40 → 177.75 ms**.
+The rerun is 53.41% below the pre-optimization
+baseline and 17.09% below the first cooperative
+run. Both cooperative runs improve on the baseline, but **neither meets latest
+≤50 ms or bucket ≤150 ms**. Throughput, exact row count, unchanged replay and
+sampled memory pass in each completed run.
+
+No additional code change was made between the two cooperative runs. Their
+difference is observed run-to-run variation, not a second optimization. Separate
+fresh databases, sequential execution, variable cache/CPU conditions and different
+numbers of reads serviced prevent isolating one change's impact from these numbers.
+
+The `metrics_benchmark_cooperative_02` run was intentionally stopped before
+completion when the user chose to run the command themselves. Its partial data
+is retained and it is excluded from completed-run comparisons. No artifacts or
+database rows were deleted.
+
+<details>
+<summary>f62a9552-6d44-4bbf-bc8c-7ef115704bb5: 2000000 points</summary>
+
+# Acceptance report
+
+Acceptance execution: Pass. Performance: Fail.
+
+The execution flag covers completed correctness checks, not all performance targets. This is an acceptance summary, not certification of every assignment deliverable.
+
+Run: f62a9552-6d44-4bbf-bc8c-7ef115704bb5. Measured at (UTC): 2026-10-07T17:42:23.789Z.
+Database: metrics\_benchmark\_cooperative\_03.
+Points: 2000000; batch size: 5000; writers: 8; mode: cold.
+
+## Performance targets
+
+| Checkpoint                     |              Actual | Target             | Result |
+| ------------------------------ | ------------------: | ------------------ | ------ |
+| Stored rows                    |             2000000 | Exactly 2,000,000  | Pass   |
+| Fresh insertion throughput     | 30659.48 points/sec | ≥20,000 points/sec | Pass   |
+| Latest p95 during fresh writes |           177.75 ms | ≤50 ms             | Fail   |
+| 30-day hourly bucket p95, idle |           174.00 ms | ≤150 ms            | Fail   |
+| API sampled peak RSS           |          242.34 MiB | <512 MiB           | Pass   |
+
+## Additional measurements
+
+- Write duration: 65.23 seconds.
+- Bucket p95 during fresh writes: 544.86 ms.
+- Latest p95, idle: 5.38 ms.
+- p95 degradation, latest / buckets: 3206.36% / 213.14%.
+- Replay newly stored rows: 0; processed input: 179423.74 points/sec. Cached accepted responses are not new inserts.
 
 ## Scenarios A–G
 

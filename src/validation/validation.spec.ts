@@ -2,11 +2,11 @@ import { decimal, exactCount, seriesId } from './numeric';
 import { timestamp } from './timestamp';
 import {
   batchBody,
-  fingerprint,
   groupPoints,
   requestKey,
   validatePoints,
 } from '../ingest/ingest.validation';
+import { fingerprint } from '../ingest/ingest.fingerprint';
 import { seriesName } from '../series/series.validation';
 import { bucketQuery } from '../queries/query.validation';
 
@@ -67,15 +67,15 @@ describe('exact boundary validation', () => {
     expect(() => seriesId('0')).toThrow();
     expect(exactCount('9007199254740992')).toBe('9007199254740992');
   });
-  it('hashes object-property order consistently while preserving string contents and array order', () => {
-    expect(fingerprint({ points: [{ value: '1', ts: 'a' }] })).toEqual(
-      fingerprint({ points: [{ ts: 'a', value: '1' }] }),
+  it('hashes object-property order consistently while preserving string contents and array order', async () => {
+    expect(await fingerprint({ points: [{ value: '1', ts: 'a' }] })).toEqual(
+      await fingerprint({ points: [{ ts: 'a', value: '1' }] }),
     );
-    expect(fingerprint({ points: ['1', '2'] })).not.toEqual(
-      fingerprint({ points: ['2', '1'] }),
+    expect(await fingerprint({ points: ['1', '2'] })).not.toEqual(
+      await fingerprint({ points: ['2', '1'] }),
     );
-    expect(fingerprint({ value: '1' })).not.toEqual(
-      fingerprint({ value: '1.0' }),
+    expect(await fingerprint({ value: '1' })).not.toEqual(
+      await fingerprint({ value: '1.0' }),
     );
   });
   it('rejects duplicate keys and enforces the 5000-point maximum', () => {

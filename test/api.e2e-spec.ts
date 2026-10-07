@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Server } from 'node:http';
 import request from 'supertest';
 import { applyMigrations } from '../scripts/migrate';
@@ -221,6 +221,52 @@ describe('metrics APIs against real PostgreSQL', () => {
       { seriesId: id, ts: '2026-10-07T10:00:00.000002Z', value: '-1.25' },
     ]).expect(200);
     expect(response.body).toEqual({ accepted: 2, duplicates: 1, rejected: [] });
+  });
+
+  it('keeps a 5000-point batch atomic with chunk-boundary errors, duplicates and legacy-compatible replay', async () => {
+    const id = await createSeries();
+    const points = Array.from({ length: 5000 }, (_, index) => ({
+      seriesId: id,
+      ts: `2026-10-07T00:00:00.${String(index).padStart(6, '0')}Z`,
+      value: '1.25',
+    }));
+    const first = points[0];
+    if (!first) throw new Error('Fixture point missing');
+    points[249] = { ...first, ts: 'bad' };
+    points[250] = { ...first, value: 'NaN' };
+    points[499] = { ...first, value: '001.2500' };
+    points[500] = { ...first, value: '-1.25' };
+    points[4999] = { ...first, seriesId: '9223372036854775807' };
+    const identifier = key();
+    const original = await ingest(points, identifier).expect(200);
+    expect(original.body).toMatchObject({
+      accepted: 4995,
+      duplicates: 1,
+      rejected: [
+        { index: 249 },
+        { index: 250 },
+        { index: 500 },
+        { index: 4999 },
+      ],
+    });
+    // Fixture object keys are alphabetical, so JSON.stringify equals the pre-change canonical encoder.
+    const previousHash = createHash('sha256')
+      .update(JSON.stringify({ points }))
+      .digest();
+    const saved = await database.pool.query<{ payload_hash: Buffer }>(
+      'SELECT payload_hash FROM ingest_requests WHERE idempotency_key = $1',
+      [identifier],
+    );
+    expect(saved.rows[0]?.payload_hash).toEqual(previousHash);
+    expect((await ingest(points, identifier).expect(200)).body).toEqual(
+      original.body,
+    );
+    const stored = await database.pool.query<{ count: string; sum: string }>(
+      'SELECT count(*)::text, sum(value)::text FROM measurements WHERE series_id = $1',
+      [id],
+    );
+    expect(stored.rows[0]).toEqual({ count: '4995', sum: '6243.75' });
+    await ingest([...points].reverse(), identifier).expect(409);
   });
 
   it('disables JIT on application database connections', async () => {

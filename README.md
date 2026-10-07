@@ -233,6 +233,22 @@ Application and measurement/comparison connections start with UTC and `jit=off`;
 
 `compare` retains `beforeRewrite` and `afterRewrite` SQL timings and the original-query plan, using the same JIT-off connection policy. Reports include the actual `postgresJit` setting. Subsequent full-scale acceptance measured both API latency targets; both remain unmet, as recorded below. See `docs/query-performance-plan.md` for evidence and checkpoints.
 
+### Cooperative ingest scheduling
+
+Ingest hashing and validation now yield to Node's I/O loop between internal
+250-point chunks. SHA-256 consumes the same canonical bytes as before, preserving
+existing saved request hashes. Successful ID/decimal normalization is cached only
+within the current batch, and normalized decimal-string IDs are sorted numerically
+without repeated BIGINT conversions. Pure validation/grouping retain original
+rejection indexes and first-occurrence precedence across chunks.
+
+This scheduling boundary does not change the 5,000-point request limit, the eight
+admitted ingests, SQL batch size, or the single atomic batch transaction. It adds no
+queue, worker, process or dependency. A 250-point chunk is not a guaranteed
+millisecond budget: large fields, JSON parsing, grouping/sorting, and pg result
+processing can still block. See [processing plan](docs/ingest-processing-plan.md)
+for tests and before/after measurement scope.
+
 ### Readable run summary
 
 Each acceptance run generates `REPORT.md` beside `acceptance.json`. Start with that Markdown file: it lists workload/machine identity, performance targets and actual measurements, A–G correctness results, pending independent checks, and links to JSON evidence. The terminal prints `markdownPath`, including for failed runs that reach report generation. Correctness success is separate from performance compliance; small/replay runs do not certify fresh two-million-point targets. New reports record the database name without credentials. Older JSON may show `Database: Not recorded`.
@@ -314,35 +330,35 @@ Strategy comparisons are **insert-kernel microbenchmarks** with identical point 
 
 The following evidence is required by PDF §3, §5 and §8 and is preserved here because local artifacts are git-ignored. Full earlier summaries and rewrite JSON plans are retained in [measurement history](docs/measurement-history.md). Numbers below are measured, not estimates; execution/correctness success is separate from performance compliance.
 
-# Acceptance report
+### Latest full-scale acceptance
 
 Acceptance execution: Pass. Performance: Fail.
 
 The execution flag covers completed correctness checks, not all performance targets. This is an acceptance summary, not certification of every assignment deliverable.
 
-Run: 8971f065-fd23-4b64-a3bc-17a4b739c1a7. Measured at (UTC): 2026-10-07T16:22:55.382Z.
-Database: metrics\_benchmark\_final\_05.
+Run: f62a9552-6d44-4bbf-bc8c-7ef115704bb5. Measured at (UTC): 2026-10-07T17:42:23.789Z.
+Database: metrics\_benchmark\_cooperative\_03.
 Points: 2000000; batch size: 5000; writers: 8; mode: cold.
 
-## Performance targets
+#### Performance targets
 
 | Checkpoint                     |              Actual | Target             | Result |
 | ------------------------------ | ------------------: | ------------------ | ------ |
 | Stored rows                    |             2000000 | Exactly 2,000,000  | Pass   |
-| Fresh insertion throughput     | 31172.38 points/sec | ≥20,000 points/sec | Pass   |
-| Latest p95 during fresh writes |           479.64 ms | ≤50 ms             | Fail   |
-| 30-day hourly bucket p95, idle |           210.68 ms | ≤150 ms            | Fail   |
-| API sampled peak RSS           |          227.09 MiB | <512 MiB           | Pass   |
+| Fresh insertion throughput     | 30659.48 points/sec | ≥20,000 points/sec | Pass   |
+| Latest p95 during fresh writes |           177.75 ms | ≤50 ms             | Fail   |
+| 30-day hourly bucket p95, idle |           174.00 ms | ≤150 ms            | Fail   |
+| API sampled peak RSS           |          242.34 MiB | <512 MiB           | Pass   |
 
-## Additional measurements
+#### Additional measurements
 
-- Write duration: 64.16 seconds.
-- Bucket p95 during fresh writes: 888.44 ms.
-- Latest p95, idle: 5.34 ms.
-- p95 degradation, latest / buckets: 8890.50% / 321.69%.
-- Replay newly stored rows: 0; processed input: 132385.19 points/sec. Cached accepted responses are not new inserts.
+- Write duration: 65.23 seconds.
+- Bucket p95 during fresh writes: 544.86 ms.
+- Latest p95, idle: 5.38 ms.
+- p95 degradation, latest / buckets: 3206.36% / 213.14%.
+- Replay newly stored rows: 0; processed input: 179423.74 points/sec. Cached accepted responses are not new inserts.
 
-## Scenarios A–G
+#### Scenarios A–G
 
 | Scenario | Check                                            | Correctness/evidence |
 | -------- | ------------------------------------------------ | -------------------- |
@@ -356,7 +372,7 @@ Points: 2000000; batch size: 5000; writers: 8; mode: cold.
 
 Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
 
-## Machine
+#### Machine
 
 - cpu: Intel(R) Core(TM) i3-7020U CPU @ 2.30GHz.
 - logicalCpus: 4.
@@ -368,15 +384,15 @@ Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
 - postgresInDocker: true.
 - poolMax: 12.
 
-## Errors and pending verification
+#### Errors and pending verification
 
 Acceptance error: None.
 Load errors: \[\].
 
-- Unit/API integration suites and clean-clone reproducibility: Not measured by this report; verify separately.
+- Independently verified: 97 tests, typecheck, lint and build passed. Clean-clone reproduction remains unverified.
 - Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
 
-Replay wall time for this latest run: **15.11 seconds**; no new points were stored. RSS is reported in MiB (1,048,576 bytes); 227.09 MiB is also below the PDF's literal 512 MB limit. The harness uses a 512 MiB threshold, so future results between 512 MB and 512 MiB need separate review.
+Replay wall time for this latest run: **11.15 seconds**; no new points were stored. RSS is reported in MiB (1,048,576 bytes); 242.34 MiB is also below the PDF's literal 512 MB limit. The harness uses a 512 MiB threshold, so future results between 512 MB and 512 MiB need separate review.
 
 ### Previous measurements
 
@@ -392,6 +408,9 @@ Replay wall time for this latest run: **15.11 seconds**; no new points were stor
 | 16:06:19              | e97f84ec-7df1-4b87-87bd-bc261ca664c1 | 2000000 |       30631.27 |  65.29 |    15.11 |              470.79 |             399.52 |  234.36 | Fail      |
 | 16:17:21              | 0cb69e6b-3c5c-44ab-8037-1708f197c435 |   40000 |       23456.87 |   1.71 |     0.33 |              528.42 |              30.01 |  137.24 | Pass      |
 | 16:22:55              | 8971f065-fd23-4b64-a3bc-17a4b739c1a7 | 2000000 |       31172.38 |  64.16 |    15.11 |              479.64 |             210.68 |  227.09 | Pass      |
+| 17:02:53              | 75533ece-d3bd-4f16-8edf-396843e46261 | 2000000 |       34136.67 |  58.59 |    12.79 |              381.54 |             288.33 |  241.99 | Pass      |
+| 17:32:28              | 5c28e0eb-699b-4294-8d21-0d71e376ff8b | 2000000 |       26289.45 |  76.08 |    20.07 |              214.40 |             196.11 |  228.75 | Pass      |
+| 17:42:23              | f62a9552-6d44-4bbf-bc8c-7ef115704bb5 | 2000000 |       30659.48 |  65.23 |    11.15 |              177.75 |             174.00 |  242.34 | Pass      |
 
 Small runs and the existing-data replay run do not demonstrate two-million-point cold-load targets. See the history for errors, workload scope and A–G details.
 
@@ -401,7 +420,102 @@ The original thirty-day bucket query grouped 250,000 points using per-row UTC da
 
 With JIT already off on the same two-million-point data, interleaved before/after SQL execution times were 489.369/170.817, 361.223/194.626 and 363.211/174.719 ms. All eight series' before/after API responses and independent aggregate checks matched. These are three SQL samples, not HTTP p95. Complete raw before/after JSON EXPLAIN output is preserved in [measurement history](docs/measurement-history.md#rewrite-diagnostic).
 
-Latest full-scale HTTP bucket p95 improved to 210.68 ms but remains above 150 ms; exact aggregation still scans each series' points, and cache/CPU contention is a suspected remaining cost. Latest lookup is cheap in isolation (recorded index lookup execution 0.028 ms), whereas latest HTTP p95 during writes is 479.64 ms versus 5.34 ms idle. Shared application/database CPU and request scheduling/connection contention are suspected, not proven; profiling and further controlled measurements are still needed. Changes between full runs and cache state prevent attributing all improvement to one change.
+Latest full-scale HTTP bucket p95 is 174.00 ms (target ≤150 ms). Latest HTTP p95 during writes is 177.75 ms versus 5.38 ms idle (target ≤50 ms during writes). Both cooperative runs improved measured latest latency versus the pre-optimization baseline but did not meet either latency budget. Synchronous ingest CPU work is a demonstrated contributor; SQL execution, pool waiting, remaining pg processing and load-client delays still require separate instrumentation.
+
+### Cooperative processing repeat-run validation
+
+Three completed runs used 2,000,000 points, 5,000-point batches, 8 writers,
+a 12-connection pool and 100 idle samples per read endpoint.
+
+| Measurement                          |   Before optimization | First cooperative run |     Cooperative rerun |
+| ------------------------------------ | --------------------: | --------------------: | --------------------: |
+| Latest p95 during writes             |             381.54 ms |             214.40 ms |             177.75 ms |
+| Bucket p95, idle                     |             288.33 ms |             196.11 ms |             174.00 ms |
+| Bucket p95 during writes             |             731.52 ms |             602.69 ms |             544.86 ms |
+| Latest p95, idle                     |              14.45 ms |               6.88 ms |               5.38 ms |
+| Fresh insertion throughput           |   34136.67 points/sec |   26289.45 points/sec |   30659.48 points/sec |
+| Cold load wall time                  |               58.59 s |               76.08 s |               65.23 s |
+| Replay wall time                     |               12.79 s |               20.07 s |               11.15 s |
+| API peak sampled RSS                 |            241.99 MiB |            228.75 MiB |            242.34 MiB |
+| Stored rows after cold load / replay | 2,000,000 / 2,000,000 | 2,000,000 / 2,000,000 | 2,000,000 / 2,000,000 |
+| A–G correctness/recovery checks      |                  Pass |                  Pass |                  Pass |
+
+Run identifiers, in column order:
+
+- Before: `75533ece-d3bd-4f16-8edf-396843e46261`, `metrics_benchmark_diagnostic_01`, 2026-10-07T17:02:53.384Z.
+- First cooperative run: `5c28e0eb-699b-4294-8d21-0d71e376ff8b`, `metrics_benchmark_cooperative_01`, 2026-10-07T17:32:28.970Z.
+- Cooperative rerun: `f62a9552-6d44-4bbf-bc8c-7ef115704bb5`, `metrics_benchmark_cooperative_03`, 2026-10-07T17:42:23.789Z.
+
+Latest p95 changed from **381.54 → 214.40 → 177.75 ms**.
+The rerun is 53.41% below the pre-optimization
+baseline and 17.09% below the first cooperative
+run. Both cooperative runs improve on the baseline, but **neither meets latest
+≤50 ms or bucket ≤150 ms**. Throughput, exact row count, unchanged replay and
+sampled memory pass in each completed run.
+
+No additional code change was made between the two cooperative runs. Their
+difference is observed run-to-run variation, not a second optimization. Separate
+fresh databases, sequential execution, variable cache/CPU conditions and different
+numbers of reads serviced prevent isolating one change's impact from these numbers.
+
+The `metrics_benchmark_cooperative_02` run was intentionally stopped before
+completion when the user chose to run the command themselves. Its partial data
+is retained and it is excluded from completed-run comparisons. No artifacts or
+database rows were deleted.
+
+### Cooperative processing comparison
+
+Before: 75533ece-d3bd-4f16-8edf-396843e46261, database `metrics_benchmark_diagnostic_01`, 2026-10-07T17:02:53.384Z.
+After: 5c28e0eb-699b-4294-8d21-0d71e376ff8b, database `metrics_benchmark_cooperative_01`, 2026-10-07T17:32:28.970Z.
+Both used 2,000,000 points, 5,000-point requests, 8 writers, a 12-connection
+API pool, JIT off, local Docker PostgreSQL and 100 idle samples per read endpoint.
+
+| Measurement                                 |                Before |                 After |
+| ------------------------------------------- | --------------------: | --------------------: |
+| Latest HTTP p95 during writes               |             381.54 ms |             214.40 ms |
+| Latest server-handler p95, cold-load window |             190.51 ms |             101.67 ms |
+| Latest server-handler p50, cold-load window |              98.86 ms |              17.56 ms |
+| Fresh HTTP write throughput                 |   34136.67 points/sec |   26289.45 points/sec |
+| Cold load wall time                         |               58.59 s |               76.08 s |
+| Replay wall time                            |               12.79 s |               20.07 s |
+| Bucket HTTP p95, idle                       |             288.33 ms |             196.11 ms |
+| Bucket HTTP p95 during writes               |             731.52 ms |             602.69 ms |
+| Latest HTTP p95, idle                       |              14.45 ms |               6.88 ms |
+| Peak sampled API RSS                        |            241.99 MiB |            228.75 MiB |
+| Latest requests serviced during cold writes |                   165 |                   395 |
+| Bucket requests serviced during cold writes |                    98 |                   192 |
+| Stored rows after cold load / replay        | 2,000,000 / 2,000,000 | 2,000,000 / 2,000,000 |
+| A–G execution/recovery checks               |                  Pass |                  Pass |
+
+Latest end-to-end p95 decreased 43.81%.
+Write throughput decreased 22.99%, but
+remains above the 20,000 points/sec target. Both API latency targets still fail.
+
+This is a before/after observation, not an isolated CPU-cost experiment. Readers
+retain the same 100 ms pause but service more requests when latency falls, so the
+after run also performs more read work. Sequential fresh databases, cache state
+and machine scheduling add variation. Do not attribute the whole throughput
+difference or the idle bucket change solely to yielding.
+
+Server-handler metrics were calculated from existing `api-load.log` events:
+select latest completions between the first fresh ingest's estimated handler start
+and the 400th fresh ingest's completion, then use nearest-rank percentiles. This
+gives 164 before and 394 after handler samples; it excludes the initial latest
+request outside that window. The interceptor starts after request parsing/routing.
+Its duration includes pool waiting, SQL round-trip time and callback scheduling,
+not SQL execution alone. Client/server samples are not matched by request ID;
+their percentiles must not be subtracted to invent a network/wait breakdown.
+
+Verification: `npm run check` passed 74 unit tests and 23 real-database/child-process
+tests (97 total), typecheck, lint and build. Yield regressions initially failed
+on synchronous hashing/validation, then passed after the change. Golden legacy
+hash bytes and chunk boundaries are tested; full acceptance retained exact
+count/sum reconciliation, partial success, concurrent duplicates and SIGTERM recovery.
+
+Next diagnosis: separately time pool acquisition, latest SQL round trips, event-loop
+delay, remaining grouping/classification/pg processing, and load-client event-loop
+delay. The measured improvement does not establish the cause of every remaining
+millisecond. No schema, SQL, pool or dependency was changed.
 
 The optional covering index was not adopted: it reduced bucket SQL p95 by 15.84% but lowered insert-kernel throughput by 24.69%, increased write duration by 32.78%, and consumed an additional 135.77 MiB index relation. The experiment below includes actual plans and measured costs.
 

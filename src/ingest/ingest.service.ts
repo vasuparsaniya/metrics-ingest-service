@@ -1,7 +1,8 @@
 import { HttpException, Inject, Injectable, Logger } from '@nestjs/common';
 import { Environment } from '../config/environment';
 import { IngestRepository } from './ingest.repository';
-import { batchBody, fingerprint } from './ingest.validation';
+import { batchBody } from './ingest.validation';
+import { fingerprint } from './ingest.fingerprint';
 import { IngestResponse } from './ingest.types';
 
 /** Sheds ingestion above available writer capacity instead of accumulating a queue. */
@@ -25,7 +26,8 @@ export class IngestService {
     this.active += 1;
     const start = performance.now();
     try {
-      const result = await this.repository.ingest(key, fingerprint(body), rows);
+      const hash = await fingerprint(body);
+      const result = await this.repository.ingest(key, hash, rows);
       this.logger.log({
         event: 'ingest',
         key,

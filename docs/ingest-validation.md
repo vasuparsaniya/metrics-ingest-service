@@ -31,4 +31,11 @@ The proposed application year restriction of 0001–9999 was not adopted. The pa
 
 ## Validation scope
 
+The HTTP path validates in 250-point internal chunks and yields to Node's I/O loop
+between chunks. Successful repeated ID and decimal normalization is reused only
+inside the same batch; timestamps, invalid inputs and every original rejection
+index retain the same validation rules. Chunking does not create separate database
+transactions or change the 5,000-point maximum. All candidates are grouped across
+the complete batch before insertion.
+
 Use boundary validation in code and essential database constraints. Do not add the declined arbitrary numeric-length, year-range, or query-bucket caps. Previously agreed name and idempotency-key limits remain in effect. The PDF's 5,000-point maximum, per-row rejection, faithful storage, and overload shedding with HTTP 429 are implemented. A separate 16 MiB transport-body ceiling bounds parser allocation without restricting individual decimal scale; initial admission and timeout behavior are documented in the README and still require full-load measurement.

@@ -1,5 +1,4 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { decimal, seriesId } from '../validation/numeric';
 import { timestamp } from '../validation/timestamp';
 import { PointGroup, Rejection, ValidPoint } from './ingest.types';
@@ -40,27 +39,46 @@ export function requestKey(rawHeaders: readonly string[]): string {
   return key;
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value))
-    return `[${(value as unknown[]).map(canonical).join(',')}]`;
-  if (isRecord(value))
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
-      .join(',')}}`;
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined)
-    throw new BadRequestException('Body must contain only JSON values');
-  return encoded;
+function cachedNormalization(
+  value: unknown,
+  normalize: (input: unknown) => string,
+  cache: Map<string, string>,
+): string {
+  if (typeof value !== 'string') return normalize(value);
+  const cached = cache.get(value);
+  if (cached !== undefined) return cached;
+  const result = normalize(value);
+  cache.set(value, result);
+  return result;
 }
 
-/** Hashes canonical JSON while preserving array order and original string contents. */
-export function fingerprint(body: unknown): Buffer {
-  return createHash('sha256').update(canonical(body)).digest();
+/** Caches successful repeated IDs/decimals only for the caller's current batch. */
+export function createPointValidator(): (
+  row: unknown,
+  index: number,
+) => ValidPoint {
+  const ids = new Map<string, string>();
+  const values = new Map<string, string>();
+  return (row, index) => {
+    if (!isRecord(row)) throw new Error('point must be an object');
+    const id = cachedNormalization(row.seriesId, seriesId, ids);
+    const time = timestamp(row.ts);
+    return {
+      index,
+      seriesId: id,
+      ts: time.sql,
+      micros: time.micros,
+      value: cachedNormalization(row.value, decimal, values),
+    };
+  };
 }
 
 /** Validates each input independently so one bad row never invalidates a batch. */
-export function validatePoints(rows: readonly unknown[]): {
+export function validatePoints(
+  rows: readonly unknown[],
+  offset = 0,
+  normalize = createPointValidator(),
+): {
   valid: ValidPoint[];
   rejected: Rejection[];
 } {
@@ -68,19 +86,10 @@ export function validatePoints(rows: readonly unknown[]): {
   const rejected: Rejection[] = [];
   rows.forEach((row, index) => {
     try {
-      if (!isRecord(row)) throw new Error('point must be an object');
-      const id = seriesId(row.seriesId);
-      const time = timestamp(row.ts);
-      valid.push({
-        index,
-        seriesId: id,
-        ts: time.sql,
-        micros: time.micros,
-        value: decimal(row.value),
-      });
+      valid.push(normalize(row, offset + index));
     } catch (error: unknown) {
       rejected.push({
-        index,
+        index: offset + index,
         reason: error instanceof Error ? error.message : 'Invalid point',
       });
     }
@@ -107,8 +116,11 @@ export function groupPoints(
       });
   }
   return [...groups.values()].sort((a, b) => {
-    const difference = BigInt(a.point.seriesId) - BigInt(b.point.seriesId);
-    if (difference !== 0n) return difference < 0n ? -1 : 1;
+    const first = a.point.seriesId;
+    const second = b.point.seriesId;
+    // Validated IDs are normalized positive decimal strings: length, then lexical, is numeric order.
+    if (first !== second)
+      return first.length - second.length || (first < second ? -1 : 1);
     return a.point.micros < b.point.micros
       ? -1
       : a.point.micros > b.point.micros
