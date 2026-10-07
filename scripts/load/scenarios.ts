@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { Pool, PoolClient } from 'pg';
 import { isRecord } from '../../src/ingest/ingest.validation';
 import { ApiClient, ingestResult } from './http';
@@ -13,6 +12,12 @@ import { monitorRss, terminationSemantics } from './rss';
 import { workload } from './workload';
 import { rowCount } from './reconcile';
 import { runLoad } from './runner';
+import {
+  InsertActivity,
+  RestartScenarioError,
+  waitForTargetLock,
+} from './restart-observer';
+import { postgresSessionOptions } from '../../src/database/session-options';
 
 async function series(api: ApiClient, label: string): Promise<string> {
   const created = await api.request('/v1/series', requestMetrics(), {
@@ -193,9 +198,19 @@ export async function restartScenario(
   let partial: ReturnType<typeof workload> | undefined;
   let rss: ReturnType<typeof monitorRss> | undefined;
   let terminate = false;
+  let workloadEnded = false;
+  let observer: Pool | undefined;
+  let observerClient: PoolClient | undefined;
+  let blockerPid: number | undefined;
+  let observation: Awaited<ReturnType<typeof waitForTargetLock>> | undefined;
+  let lastActivity: InsertActivity[] = [];
+  let polls = 0;
+  let manifestPath: string | undefined;
+  let stage = 'prepare';
   try {
     const prepared = await createManifest(server.api, total, directory);
     const manifest = prepared.manifest;
+    manifestPath = prepared.path;
     const firstBatch = batchAt(manifest, 0);
     // Block the final identity in lock order so preceding rows execute before SIGTERM.
     const ordered = [...firstBatch].sort(
@@ -206,6 +221,11 @@ export async function restartScenario(
     const last = ordered[ordered.length - 1];
     if (!last) throw new Error('Restart needs a nonempty batch');
     blocker = await pool.connect();
+    const backend = await blocker.query<{ pid: number }>(
+      'SELECT pg_backend_pid() AS pid',
+    );
+    blockerPid = backend.rows[0]?.pid;
+    if (!blockerPid) throw new Error('Missing restart blocker backend PID');
     await blocker.query('BEGIN');
     await blocker.query(
       'INSERT INTO measurements(series_id, ts, value) VALUES ($1,$2,$3)',
@@ -213,36 +233,41 @@ export async function restartScenario(
     );
     const pid = server.child.pid;
     if (!pid) throw new Error('No restart process PID');
+    // Establish the observer before CPU-heavy generation and API validation begin.
+    observer = new Pool({
+      connectionString: databaseUrl,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 1000,
+      options: postgresSessionOptions,
+    });
+    observerClient = await observer.connect();
+    await observerClient.query('SELECT 1');
     rss = monitorRss(server.child);
     partial = workload(server.api, manifest, {
       shouldStop: () => terminate,
       reads: true,
+    }).finally(() => {
+      workloadEnded = true;
     });
-    const deadline = Date.now() + 1700;
-    let observed = false;
-    // The observer uses a separate short-lived connection; blocker must retain its transaction.
-    const observer = new Pool({ connectionString: databaseUrl, max: 1 });
-    try {
-      while (Date.now() < deadline) {
-        const waiting = await observer.query(`SELECT 1 FROM pg_stat_activity
-          WHERE datname = current_database() AND application_name = 'metrics-ingest-service'
-          AND wait_event_type = 'Lock' AND query LIKE '%INSERT INTO measurements%'`);
-        if (waiting.rowCount) {
-          observed = true;
-          break;
-        }
-        await delay(25);
-      }
-    } finally {
-      await observer.end();
-    }
-    if (!observed) {
-      terminate = true;
-      throw new Error(
-        'Did not observe the target mid-batch lock before its timeout',
-      );
-    }
+    stage = 'lock-observation';
+    const observing = observerClient;
+    observation = await waitForTargetLock({
+      blockerPid,
+      ended: () => workloadEnded,
+      read: async () => {
+        const waiting = await observing.query<InsertActivity>(`SELECT pid,
+          wait_event_type AS "waitEventType", pg_blocking_pids(pid) AS "blockerPids"
+          FROM pg_stat_activity WHERE datname = current_database()
+          AND application_name = 'metrics-ingest-service'
+          AND query LIKE '%INSERT INTO measurements%'`);
+        lastActivity = waiting.rows;
+        polls += 1;
+        return waiting.rows;
+      },
+    });
     terminate = true;
+    stage = 'termination';
     await server.stop();
     if (server.forcedKill)
       throw new Error(
@@ -255,6 +280,7 @@ export async function restartScenario(
     await blocker.query('ROLLBACK');
     blocker.release();
     blocker = undefined;
+    stage = 'rollback-verification';
     const batchRows = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM measurements m
       JOIN unnest($1::bigint[], $2::timestamptz[]) AS p(id, ts) ON m.series_id = p.id AND m.ts = p.ts`,
@@ -267,8 +293,14 @@ export async function restartScenario(
     if (batchRows.rows[0]?.count !== '0' || request.rowCount !== 0)
       throw new Error('Interrupted batch left rows or a cached request');
     const rowsAfterInterruption = await rowCount(pool, manifest);
-    await artifact(resolve(dirname(prepared.path), 'interrupted.json'), {
+    const interruptedReport = resolve(
+      dirname(prepared.path),
+      'interrupted.json',
+    );
+    await artifact(interruptedReport, {
       observedMidBatchLock: true,
+      blockerPid,
+      observation,
       termination: terminationSemantics(),
       rowsAfterInterruption,
       memory: memoryBeforeRestart,
@@ -280,7 +312,9 @@ export async function restartScenario(
       databaseUrl,
       resolve(directory, `restart-after-${randomUUID()}.log`),
     );
+    stage = 'resume';
     const resumed = await runLoad(pool, server, manifest, prepared.path);
+    stage = 'replay';
     const replayed = await runLoad(pool, server, manifest, prepared.path);
     return {
       passed: true,
@@ -288,10 +322,38 @@ export async function restartScenario(
       total,
       fullAssignmentScale: total === 2000000,
       manifestPath: prepared.path,
+      interruptedReport,
+      observation,
+      blockerPid,
       rowsAfterInterruption,
       resumedReport: resumed.path,
       replayReport: replayed.path,
     };
+  } catch (error: unknown) {
+    terminate = true;
+    await server.stop();
+    const interrupted = partial ? await partial : undefined;
+    partial = undefined;
+    const failureReport = resolve(
+      directory,
+      `restart-failure-${randomUUID()}.json`,
+    );
+    const message = error instanceof Error ? error.message : String(error);
+    await artifact(failureReport, {
+      kind: 'restart-failure',
+      passed: false,
+      stage,
+      error: message,
+      manifestPath,
+      blockerPid,
+      observation,
+      polls,
+      lastActivity,
+      interrupted,
+      observationTimeoutMs: 10000,
+      productionLockTimeoutMs: 2000,
+    });
+    throw new RestartScenarioError(message, failureReport, error);
   } finally {
     terminate = true;
     await server.stop();
@@ -304,5 +366,7 @@ export async function restartScenario(
         blocker.release();
       }
     }
+    observerClient?.release();
+    await observer?.end();
   }
 }

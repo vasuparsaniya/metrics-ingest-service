@@ -14,7 +14,7 @@ A backend service for ingesting timestamped measurements in batches and querying
 
 ## Project status
 
-All required API routes and business-schema migrations are implemented. Unit tests and real-Postgres API tests cover replay, concurrent duplicates, partial failure, late arrivals, and SIGTERM/restart. Runnable load, benchmark, A–G acceptance, and write-strategy/index-comparison scripts are now implemented and verified with small datasets. The full two-million-point measurements and evidence-driven optimization remain pending; no assignment throughput or latency target is claimed yet.
+All required API routes and business-schema migrations are implemented. Full two-million-point acceptance runs, SQL strategy/index experiments, and query optimization measurements are recorded below. The latest run completed A–G correctness/recovery checks and passed throughput, row-count and memory targets, but failed both latency targets. This is not a claim of full assignment compliance.
 
 Work is on `feat/ingest`; the submission must include an open pull request into `main`.
 
@@ -225,6 +225,14 @@ npm run acceptance -- --points 5000 --samples 20 --database metrics_benchmark_ac
 
 Acceptance A/B retain the primary load database. C–E run in another automatically created dedicated case database so they do not change A's exact row count. G uses another fresh dedicated database and the same total generator size as A: its first batch is held mid-insert by a database lock, termination is requested after PostgreSQL confirms an in-flight insert is waiting, the target batch/key rollback is verified, then the API restarts and retries the original manifest. It finishes with exact full-data reconciliation and another unchanged replay. If the lock was not observed or the emergency SIGKILL fallback was needed, the scenario fails rather than claiming success.
 
+### Query tuning and session settings
+
+Scenario G establishes its independent observer connection before ingestion, then waits at most ten seconds for an INSERT blocked specifically by its test blocker backend PID. It does not assume arrival within 1.7 seconds or accept an unrelated lock. Workload completion without the target lock fails immediately. This observer deadline does not change the production two-second lock timeout. Failed restart attempts retain `restart-failure-*.json` diagnostics and are marked failed in the acceptance summary; POSIX platform support is not labelled verified recovery when G failed.
+
+Application and measurement/comparison connections start with UTC and `jit=off`; this is a session policy, not a server-wide setting or migration. The original full-scale plan spent approximately 646 ms on JIT compilation. The bucket query now aggregates each clipped bucket range through the existing primary-key index, avoiding `date_trunc`/hash grouping for every measurement, and joins the point at `max(ts)` for `last`. Exact NUMERIC aggregates, empty null buckets, UTC alignment and half-open range boundaries are unchanged. No optional index or cached/precomputed aggregate is introduced.
+
+`compare` retains `beforeRewrite` and `afterRewrite` SQL timings and the original-query plan, using the same JIT-off connection policy. Reports include the actual `postgresJit` setting. Subsequent full-scale acceptance measured both API latency targets; both remain unmet, as recorded below. See `docs/query-performance-plan.md` for evidence and checkpoints.
+
 ### Readable run summary
 
 Each acceptance run generates `REPORT.md` beside `acceptance.json`. Start with that Markdown file: it lists workload/machine identity, performance targets and actual measurements, A–G correctness results, pending independent checks, and links to JSON evidence. The terminal prints `markdownPath`, including for failed runs that reach report generation. Correctness success is separate from performance compliance; small/replay runs do not certify fresh two-million-point targets. New reports record the database name without credentials. Older JSON may show `Database: Not recorded`.
@@ -236,6 +244,16 @@ npm run report -- --input "artifacts/acceptance-RUN-ID/acceptance.json"
 ```
 
 The generator never overwrites an existing `REPORT.md` or modifies JSON. Strategy/index comparisons and unit/E2E suites remain separate evidence; their completion is not inferred by the acceptance summary. Reports are generated after measurements, not during timed requests.
+
+`compare` also automatically generates a readable `COMPARISON.md` beside its JSON and prints `markdownPath`. It includes insert-kernel throughput, optional-index write/read changes, recorded relation sizes, exact reconciliation, actual SQL plans (including timeout evidence), machine details and limitations. These direct SQL measurements are not HTTP performance certification. If `COMPARISON.md` already exists, the next report uses its unique `comparison-<timestamp>-<id>.md` name instead; previous summaries are preserved.
+
+For an existing comparison, without rerunning benchmarks or accessing the database:
+
+```bash
+npm run report -- --input "artifacts/acceptance-RUN-ID/DATASET-ID/comparison-TIMESTAMP-ID.json"
+```
+
+Older comparison JSON may omit database/workload metadata; the summary marks it Not recorded rather than inventing it. Comparison plans and trade-offs must still be reviewed before adopting any production optimization.
 
 ### Platform support and restart semantics
 
@@ -257,13 +275,13 @@ Required execution sequence and evidence:
 | D — Partial failure       | Submit 5,000 rows including an invalid decimal, invalid timestamp, nonexistent series, and internal duplicate. Check all good rows persist and every rejected index/reason is correct.                                                                                                                        |
 | E — Late arrival          | Query a bucket, insert older points, then query again. Verify aggregates update and latest remains the newest timestamp rather than the last arrival.                                                                                                                                                         |
 | F — Reads during writes   | While A is actively writing, repeatedly call both latest and the 30-day hourly-bucket endpoint. Report each p95 and degradation against idle reads. Latest target: p95 ≤ 50 ms; bucket target: p95 ≤ 150 ms. Also measure the 30-day hourly query after the table is fully loaded.                            |
-| G — Restart               | SIGTERM the application during the full load, restart, and resume/replay with the same generated data and keys. Verify exact final count, no duplicates, and no half-written batches. The current restart test covers a small interrupted batch, not this full-load scenario.                                 |
+| G — Restart               | SIGTERM the application during a separately generated load of the requested size, restart, and resume/replay with unchanged data and keys. Verify exact final count, no duplicates, and no half-written target batch. Full-scale recovery passed in the latest recorded run.                                  |
 
 The generator persists a reproducible manifest containing series IDs, generation parameters, and exact expected per-series counts/sums; stable request keys derive from its run ID and batch index. Reuse it for replay and restart; creating new series would not test replay. Values are signed integer cents rendered as decimal strings, and expected sums use BigInt arithmetic. Points span thirty days deterministically, with unique millisecond timestamps within each series. At most one batch per writer is generated in memory.
 
 429/503 and network failures have bounded retries with unchanged bodies/keys. Every attempt records its duration and status; replay throughput reports zero newly inserted points/sec rather than summing cached accepted counts. Reports also show processed-input throughput and replay wall time. Reader loops do not retry, so failed reads remain visible. Average verification follows the documented finite PostgreSQL NUMERIC division contract; count/sum/min/max/last and replay equality are independently checked without floating-point value arithmetic.
 
-The managed **application process** RSS is sampled every 100 ms using its own `process.memoryUsage.rss()` over IPC (target: below 512 MB); Docker database/generator memory is not substituted. Measurement includes immediate and final samples while the child is alive. Reports include PID, source, sampling count, final-sample availability, and telemetry errors; missing telemetry is null, never invented zero memory. A terminated child retains its readings without waiting for a final sample it cannot send. Report CPU, RAM, PostgreSQL version, Docker usage, actual throughput, replay duration, row counts, both latency percentiles, and peak sampled RSS. Percentiles use nearest rank; successful and failed attempt durations/statuses are reported separately. Cold-load readers rotate across all eight series, run independently, and issue a request per category with a 100 ms pause. The range has 720 hourly buckets per series. A small run's metrics are verification evidence only. No full-scale measurements have been recorded yet.
+The managed **application process** RSS is sampled every 100 ms using its own `process.memoryUsage.rss()` over IPC (target: below 512 MB); Docker database/generator memory is not substituted. Measurement includes immediate and final samples while the child is alive. Reports include PID, source, sampling count, final-sample availability, and telemetry errors; missing telemetry is null, never invented zero memory. A terminated child retains its readings without waiting for a final sample it cannot send. Report CPU, RAM, PostgreSQL version, Docker usage, actual throughput, replay duration, row counts, both latency percentiles, and peak sampled RSS. Percentiles use nearest rank; successful and failed attempt durations/statuses are reported separately. Cold-load readers rotate across all eight series, run independently, and issue a request per category with a 100 ms pause. The range has 720 hourly buckets per series. A small run's metrics are verification evidence only. Full-scale measurements are recorded below; both latency targets remain unmet.
 
 ### Reconciliation SQL
 
@@ -292,4 +310,369 @@ The comparison report includes real lookup plans, bucket plans, relation/index s
 
 Strategy comparisons are **insert-kernel microbenchmarks** with identical point constraints, batch scope, eight writers, and ordered identities. They exclude HTTP validation, payload hashing, request records, and post-insert classification; their throughput is not the API's end-to-end throughput. The production load report supplies that measurement. Experiments run sequentially, so cache/order noise requires repeated runs before choosing an optimization.
 
-Still required before submission: run the full two-million-point commands on the agreed database; paste the actual machine/results table and relevant raw plans here; identify a genuinely slow query and an evidence-backed improvement with both timings; diagnose target misses; and decide whether any measured optional index is worth its write/storage cost. Tooling availability is not a claim that these final measurement/optimization deliverables are complete.
+## Recorded assignment measurements
+
+The following evidence is required by PDF §3, §5 and §8 and is preserved here because local artifacts are git-ignored. Full earlier summaries and rewrite JSON plans are retained in [measurement history](docs/measurement-history.md). Numbers below are measured, not estimates; execution/correctness success is separate from performance compliance.
+
+# Acceptance report
+
+Acceptance execution: Pass. Performance: Fail.
+
+The execution flag covers completed correctness checks, not all performance targets. This is an acceptance summary, not certification of every assignment deliverable.
+
+Run: 8971f065-fd23-4b64-a3bc-17a4b739c1a7. Measured at (UTC): 2026-10-07T16:22:55.382Z.
+Database: metrics\_benchmark\_final\_05.
+Points: 2000000; batch size: 5000; writers: 8; mode: cold.
+
+## Performance targets
+
+| Checkpoint                     |              Actual | Target             | Result |
+| ------------------------------ | ------------------: | ------------------ | ------ |
+| Stored rows                    |             2000000 | Exactly 2,000,000  | Pass   |
+| Fresh insertion throughput     | 31172.38 points/sec | ≥20,000 points/sec | Pass   |
+| Latest p95 during fresh writes |           479.64 ms | ≤50 ms             | Fail   |
+| 30-day hourly bucket p95, idle |           210.68 ms | ≤150 ms            | Fail   |
+| API sampled peak RSS           |          227.09 MiB | <512 MiB           | Pass   |
+
+## Additional measurements
+
+- Write duration: 64.16 seconds.
+- Bucket p95 during fresh writes: 888.44 ms.
+- Latest p95, idle: 5.34 ms.
+- p95 degradation, latest / buckets: 8890.50% / 321.69%.
+- Replay newly stored rows: 0; processed input: 132385.19 points/sec. Cached accepted responses are not new inserts.
+
+## Scenarios A–G
+
+| Scenario | Check                                            | Correctness/evidence |
+| -------- | ------------------------------------------------ | -------------------- |
+| A        | Exact counts/sums and bucket aggregates          | Pass                 |
+| B        | Replay leaves counts and aggregates unchanged    | Pass                 |
+| C        | Concurrent request/point deduplication           | Pass                 |
+| D        | Partial success and indexed rejection accounting | Pass                 |
+| E        | Late data changes buckets, not newest timestamp  | Pass                 |
+| F        | Read latency measurements collected              | Pass                 |
+| G        | Restart, rollback, resume and unchanged replay   | Pass                 |
+
+Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
+
+## Machine
+
+- cpu: Intel(R) Core(TM) i3-7020U CPU @ 2.30GHz.
+- logicalCpus: 4.
+- ramBytes: 12442411008.
+- os: linux 6.8.0-51-generic.
+- node: v20.18.0.
+- postgres: PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86\_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit.
+- postgresJit: off.
+- postgresInDocker: true.
+- poolMax: 12.
+
+## Errors and pending verification
+
+Acceptance error: None.
+Load errors: \[\].
+
+- Unit/API integration suites and clean-clone reproducibility: Not measured by this report; verify separately.
+- Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
+
+Replay wall time for this latest run: **15.11 seconds**; no new points were stored. RSS is reported in MiB (1,048,576 bytes); 227.09 MiB is also below the PDF's literal 512 MB limit. The harness uses a 512 MiB threshold, so future results between 512 MB and 512 MiB need separate review.
+
+### Previous measurements
+
+| Run (UTC, 2026-10-07) | Run ID                               |  Points | Fresh points/s | Load s | Replay s | Latest write p95 ms | Bucket idle p95 ms | RSS MiB | Execution |
+| --------------------- | ------------------------------------ | ------: | -------------: | -----: | -------: | ------------------: | -----------------: | ------: | --------- |
+| 03:41:44              | a9005af0-bdc6-4b74-9407-cd41219df1bd |    5000 |       12177.74 |   0.41 |     0.06 |               68.09 |              24.00 |  102.89 | Pass      |
+| 03:48:43              | e2219fe3-02c3-4eea-bff8-ccf9ea624577 |   40000 |       21974.85 |   1.82 |     0.36 |              476.25 |              30.83 |  141.38 | Pass      |
+| 04:06:03              | 40557202-9dfc-449f-8491-c0d7f4efc67d |    5000 |        7210.45 |   0.69 |     0.20 |              188.02 |              46.31 |  103.68 | Fail      |
+| 04:07:48              | 1625ae7b-aa2d-4a2b-9f28-eeebba4e065c |    5000 |           0.00 |   0.22 |     0.11 |               41.85 |              30.41 |   92.62 | Pass      |
+| 04:45:33              | bf576835-8038-4896-81a6-234579022277 | 2000000 |       25572.91 |  78.21 |    26.89 |              536.37 |            1337.35 |  229.21 | Pass      |
+| 05:16:38              | e366914a-00a0-41e1-aedc-0a874c47af1e | 2000000 |       28064.99 |  71.26 |    15.54 |              507.74 |            1176.10 |  228.18 | Pass      |
+| 15:55:17              | 5d029224-683b-447f-b4e5-8b6a38730469 | 2000000 |       31396.47 |  63.70 |    13.34 |              455.94 |            1034.80 |  224.80 | Pass      |
+| 16:06:19              | e97f84ec-7df1-4b87-87bd-bc261ca664c1 | 2000000 |       30631.27 |  65.29 |    15.11 |              470.79 |             399.52 |  234.36 | Fail      |
+| 16:17:21              | 0cb69e6b-3c5c-44ab-8037-1708f197c435 |   40000 |       23456.87 |   1.71 |     0.33 |              528.42 |              30.01 |  137.24 | Pass      |
+| 16:22:55              | 8971f065-fd23-4b64-a3bc-17a4b739c1a7 | 2000000 |       31172.38 |  64.16 |    15.11 |              479.64 |             210.68 |  227.09 | Pass      |
+
+Small runs and the existing-data replay run do not demonstrate two-million-point cold-load targets. See the history for errors, workload scope and A–G details.
+
+### Slow query, improvement and remaining misses
+
+The original thirty-day bucket query grouped 250,000 points using per-row UTC date truncation and a hash aggregate. Its recorded production EXPLAIN took 1,891.626 ms, including 645.624 ms of JIT compilation. Sessions now disable JIT; the rewritten query aggregates clipped ranges per generated bucket using the required primary-key index, then looks up the value at max(timestamp). This preserves empty buckets, exact decimals and latest-by-time semantics without an extra production index.
+
+With JIT already off on the same two-million-point data, interleaved before/after SQL execution times were 489.369/170.817, 361.223/194.626 and 363.211/174.719 ms. All eight series' before/after API responses and independent aggregate checks matched. These are three SQL samples, not HTTP p95. Complete raw before/after JSON EXPLAIN output is preserved in [measurement history](docs/measurement-history.md#rewrite-diagnostic).
+
+Latest full-scale HTTP bucket p95 improved to 210.68 ms but remains above 150 ms; exact aggregation still scans each series' points, and cache/CPU contention is a suspected remaining cost. Latest lookup is cheap in isolation (recorded index lookup execution 0.028 ms), whereas latest HTTP p95 during writes is 479.64 ms versus 5.34 ms idle. Shared application/database CPU and request scheduling/connection contention are suspected, not proven; profiling and further controlled measurements are still needed. Changes between full runs and cache state prevent attributing all improvement to one change.
+
+The optional covering index was not adopted: it reduced bucket SQL p95 by 15.84% but lowered insert-kernel throughput by 24.69%, increased write duration by 32.78%, and consumed an additional 135.77 MiB index relation. The experiment below includes actual plans and measured costs.
+
+### Remaining evidence limitations
+
+The comparison measures the optional index present versus absent while keeping required primary keys and foreign keys. Disabling planner index access is not dropping an index, nor does it measure mandatory-index write cost. Separate physically dropped-index write-cost measurements for mandatory indexes, plans with/without every lookup index, clean-clone reproduction, and final submission/PR work remain unverified. Measured relation sizes exclude WAL and some relations; compliance with the PDF's rough 500 MB disk budget is not established. Retained experiment copies require additional disk space.
+
+### Recorded strategy/index comparison and raw plans
+
+# SQL strategy and index comparison
+
+Execution: Completed. Full assignment scale: Yes.
+
+Dataset run: ee1a8da8-4de7-45ac-acec-2e9de6412f7c. Measured at (UTC): 2026-10-07T05:26:01.172Z.
+Database: Not recorded.
+Points: 2000000; batch size: Not recorded; writers: Not recorded; comparison pool: Not recorded.
+
+## Insert strategies and reconciliation
+
+| Experiment              |    Rows | Duration |          Throughput | Exact reconciliation                   |
+| ----------------------- | ------: | -------: | ------------------: | -------------------------------------- |
+| unnestPrimaryOnly       | 2000000 |  34.91 s | 57289.25 points/sec | per-series count and exact sum matched |
+| valuesPrimaryOnly       | 2000000 |  41.56 s | 48123.71 points/sec | per-series count and exact sum matched |
+| unnestWithCoveringIndex | 2000000 |  46.35 s | 43146.76 points/sec | per-series count and exact sum matched |
+
+These are insert-kernel microbenchmarks, not an end-to-end API throughput claim. They exclude HTTP validation, request hashing, idempotency records and post-insert classification.
+
+## Optional covering-index cost
+
+- Throughput change versus primary-only UNNEST: -24.69%. Negative means slower writes.
+- Write-duration change for the same dataset: 32.78%. Positive means longer writes.
+- Bucket SQL p95 change: -15.84%. Negative means faster reads.
+
+## SQL query timings
+
+| Experiment        | Samples |   Minimum |       p50 |        p95 |    Maximum |
+| ----------------- | ------: | --------: | --------: | ---------: | ---------: |
+| primaryOnly       |      20 | 798.69 ms | 850.47 ms | 1216.89 ms | 1318.82 ms |
+| withCoveringIndex |      20 | 713.25 ms | 837.58 ms | 1024.17 ms | 1047.50 ms |
+
+These are direct SQL timings, not HTTP latency results. They do not prove the ≤150 ms bucket or ≤50 ms latest API targets, nor latest latency under concurrent API writes.
+
+## Relation storage
+
+| Relation                             | Recorded bytes |        MiB |
+| ------------------------------------ | -------------: | ---------: |
+| bench\_8c0ffb09c49b4d8d\_base        |      104415232 |  99.58 MiB |
+| bench\_8c0ffb09c49b4d8d\_base\_pkey  |       67731456 |  64.59 MiB |
+| bench\_8c0ffb09c49b4d8d\_cover       |      104448000 |  99.61 MiB |
+| bench\_8c0ffb09c49b4d8d\_cover\_idx  |      142368768 | 135.77 MiB |
+| bench\_8c0ffb09c49b4d8d\_cover\_pkey |       68894720 |  65.70 MiB |
+
+Sizes are pg_relation_size values for the listed heap/index relations, not total database usage (TOAST/WAL and unlisted relations are not included).
+
+## EXPLAIN (ANALYZE, BUFFERS) evidence
+
+### production
+
+Measured EXPLAIN wall time: 1904.33 ms.
+
+    Nested Loop Left Join  (cost=76277.17..2785476.93 rows=595404 width=264) (actual time=1664.354..1687.595 rows=720 loops=1)
+      Buffers: shared hit=2874 read=2984 written=2033
+      ->  Merge Left Join  (cost=76276.71..84307.12 rows=595404 width=144) (actual time=1663.530..1664.514 rows=720 loops=1)
+            Merge Cond: ((('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval))) = a.bucket)
+            Buffers: shared read=2978 written=2028
+            ->  Sort  (cost=41.39..43.19 rows=720 width=8) (actual time=642.227..642.371 rows=720 loops=1)
+                  Sort Key: (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)))
+                  Sort Method: quicksort  Memory: 47kB
+                  ->  Function Scan on generate_series steps  (cost=0.02..7.22 rows=720 width=8) (actual time=641.989..642.122 rows=720 loops=1)
+            ->  Sort  (cost=76235.32..76648.80 rows=165390 width=144) (actual time=1021.265..1021.418 rows=720 loops=1)
+                  Sort Key: a.bucket
+                  Sort Method: quicksort  Memory: 72kB
+                  Buffers: shared read=2978 written=2028
+                  ->  Subquery Scan on a  (cost=43024.26..50027.72 rows=165390 width=144) (actual time=1018.954..1020.648 rows=720 loops=1)
+                        Buffers: shared read=2978 written=2028
+                        ->  HashAggregate  (cost=43024.26..48373.82 rows=165390 width=144) (actual time=1018.945..1020.461 rows=720 loops=1)
+                              Group Key: date_trunc('hour'::text, measurements.ts, 'UTC'::text)
+                              Planned Partitions: 16  Batches: 1  Memory Usage: 913kB
+                              Buffers: shared read=2978 written=2028
+                              ->  Bitmap Heap Scan on measurements  (cost=7257.98..25032.30 rows=251416 width=14) (actual time=188.469..789.021 rows=250000 loops=1)
+                                    Recheck Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                                    Heap Blocks: exact=1979
+                                    Buffers: shared read=2978 written=2028
+                                    ->  Bitmap Index Scan on measurements_pkey  (cost=0.00..7195.13 rows=251416 width=0) (actual time=186.974..186.974 rows=250000 loops=1)
+                                          Index Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                                          Buffers: shared read=999 written=464
+      ->  Limit  (cost=0.46..4.28 rows=1 width=14) (actual time=0.022..0.022 rows=1 loops=720)
+            Buffers: shared hit=2874 read=6 written=5
+            ->  Result  (cost=0.46..4798.06 rows=1257 width=14) (actual time=0.022..0.022 rows=1 loops=720)
+                  One-Time Filter: (a.count > 0)
+                  Buffers: shared hit=2874 read=6 written=5
+                  ->  Index Scan Backward using measurements_pkey on measurements measurements_1  (cost=0.46..4798.06 rows=1257 width=14) (actual time=0.020..0.020 rows=1 loops=720)
+                        Index Cond: ((series_id = '1'::bigint) AND (ts >= GREATEST(('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)), '2026-09-01 00:00:00+00'::timestamp with time zone)) AND (ts < CASE WHEN (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)) = date_trunc('hour'::text, ('2026-10-01 00:00:00+00'::timestamp with time zone - '00:00:00.000001'::interval), 'UTC'::text)) THEN '2026-10-01 00:00:00+00'::timestamp with time zone ELSE (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)) + '01:00:00'::interval) END))
+                        Buffers: shared hit=2874 read=6 written=5
+    Planning:
+      Buffers: shared hit=48 read=3
+    Planning Time: 1.792 ms
+    JIT:
+      Functions: 29
+      Options: Inlining true, Optimization true, Expressions true, Deforming true
+      Timing: Generation 3.573 ms (Deform 0.472 ms), Inlining 141.958 ms, Optimization 276.919 ms, Emission 223.174 ms, Total 645.624 ms
+    Execution Time: 1891.626 ms
+
+### primaryOnly
+
+Measured EXPLAIN wall time: 1070.80 ms.
+
+    Nested Loop Left Join  (cost=77477.06..2792485.57 rows=597380 width=264) (actual time=1048.005..1064.032 rows=720 loops=1)
+      Buffers: shared hit=2901 read=3009 written=2200
+      ->  Merge Left Join  (cost=77476.60..85533.63 rows=597380 width=144) (actual time=1047.934..1048.608 rows=720 loops=1)
+            Merge Cond: ((('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval))) = a.bucket)
+            Buffers: shared hit=26 read=3004 written=2197
+            ->  Sort  (cost=41.39..43.19 rows=720 width=8) (actual time=527.131..527.242 rows=720 loops=1)
+                  Sort Key: (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)))
+                  Sort Method: quicksort  Memory: 47kB
+                  ->  Function Scan on generate_series steps  (cost=0.02..7.22 rows=720 width=8) (actual time=526.891..527.024 rows=720 loops=1)
+            ->  Sort  (cost=77435.21..77850.05 rows=165939 width=144) (actual time=520.782..520.896 rows=720 loops=1)
+                  Sort Key: a.bucket
+                  Sort Method: quicksort  Memory: 72kB
+                  Buffers: shared hit=26 read=3004 written=2197
+                  ->  Subquery Scan on a  (cost=44041.94..51134.05 rows=165939 width=144) (actual time=519.741..520.488 rows=720 loops=1)
+                        Buffers: shared hit=26 read=3004 written=2197
+                        ->  HashAggregate  (cost=44041.94..49474.66 rows=165939 width=144) (actual time=519.737..520.401 rows=720 loops=1)
+                              Group Key: date_trunc('hour'::text, bench_8c0ffb09c49b4d8d_base.ts, 'UTC'::text)
+                              Planned Partitions: 16  Batches: 1  Memory Usage: 913kB
+                              Buffers: shared hit=26 read=3004 written=2197
+                              ->  Bitmap Heap Scan on bench_8c0ffb09c49b4d8d_base  (cost=7586.01..25510.97 rows=258948 width=14) (actual time=136.073..399.248 rows=250000 loops=1)
+                                    Recheck Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                                    Heap Blocks: exact=2013
+                                    Buffers: shared hit=26 read=3004 written=2197
+                                    ->  Bitmap Index Scan on bench_8c0ffb09c49b4d8d_base_pkey  (cost=0.00..7521.28 rows=258948 width=0) (actual time=135.363..135.364 rows=250000 loops=1)
+                                          Index Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                                          Buffers: shared read=1017 written=629
+      ->  Limit  (cost=0.46..4.27 rows=1 width=14) (actual time=0.016..0.016 rows=1 loops=720)
+            Buffers: shared hit=2875 read=5 written=3
+            ->  Result  (cost=0.46..4936.19 rows=1295 width=14) (actual time=0.015..0.015 rows=1 loops=720)
+                  One-Time Filter: (a.count > 0)
+                  Buffers: shared hit=2875 read=5 written=3
+                  ->  Index Scan Backward using bench_8c0ffb09c49b4d8d_base_pkey on bench_8c0ffb09c49b4d8d_base bench_8c0ffb09c49b4d8d_base_1  (cost=0.46..4936.19 rows=1295 width=14) (actual time=0.014..0.014 rows=1 loops=720)
+                        Index Cond: ((series_id = '1'::bigint) AND (ts >= GREATEST(('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)), '2026-09-01 00:00:00+00'::timestamp with time zone)) AND (ts < CASE WHEN (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)) = date_trunc('hour'::text, ('2026-10-01 00:00:00+00'::timestamp with time zone - '00:00:00.000001'::interval), 'UTC'::text)) THEN '2026-10-01 00:00:00+00'::timestamp with time zone ELSE (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)) + '01:00:00'::interval) END))
+                        Buffers: shared hit=2875 read=5 written=3
+    Planning:
+      Buffers: shared hit=15 read=1
+    Planning Time: 0.808 ms
+    JIT:
+      Functions: 29
+      Options: Inlining true, Optimization true, Expressions true, Deforming true
+      Timing: Generation 4.138 ms (Deform 0.534 ms), Inlining 33.598 ms, Optimization 245.598 ms, Emission 247.703 ms, Total 531.036 ms
+    Execution Time: 1068.475 ms
+
+### withCoveringIndex
+
+Measured EXPLAIN wall time: 941.96 ms.
+
+    Nested Loop Left Join  (cost=76256.06..1745355.60 rows=590893 width=264) (actual time=865.252..935.756 rows=720 loops=1)
+      Buffers: shared hit=2868 read=2754 written=1493
+      ->  Merge Left Join  (cost=76255.60..84225.24 rows=590893 width=144) (actual time=862.792..863.825 rows=720 loops=1)
+            Merge Cond: ((('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval))) = a.bucket)
+            Buffers: shared hit=1006 read=2064 written=1120
+            ->  Sort  (cost=41.39..43.19 rows=720 width=8) (actual time=530.171..530.328 rows=720 loops=1)
+                  Sort Key: (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)))
+                  Sort Method: quicksort  Memory: 47kB
+                  ->  Function Scan on generate_series steps  (cost=0.02..7.22 rows=720 width=8) (actual time=529.745..529.966 rows=720 loops=1)
+            ->  Sort  (cost=76214.21..76624.55 rows=164137 width=144) (actual time=332.598..332.757 rows=720 loops=1)
+                  Sort Key: a.bucket
+                  Sort Method: quicksort  Memory: 72kB
+                  Buffers: shared hit=1006 read=2064 written=1120
+                  ->  Subquery Scan on a  (cost=43240.11..50211.72 rows=164137 width=144) (actual time=331.561..332.313 rows=720 loops=1)
+                        Buffers: shared hit=1006 read=2064 written=1120
+                        ->  HashAggregate  (cost=43240.11..48570.35 rows=164137 width=144) (actual time=331.557..332.226 rows=720 loops=1)
+                              Group Key: date_trunc('hour'::text, bench_8c0ffb09c49b4d8d_cover.ts, 'UTC'::text)
+                              Planned Partitions: 16  Batches: 1  Memory Usage: 913kB
+                              Buffers: shared hit=1006 read=2064 written=1120
+                              ->  Bitmap Heap Scan on bench_8c0ffb09c49b4d8d_cover  (cost=7445.39..25229.05 rows=251683 width=14) (actual time=63.891..245.318 rows=250000 loops=1)
+                                    Recheck Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                                    Heap Blocks: exact=2031
+                                    Buffers: shared hit=1006 read=2064 written=1120
+                                    ->  Bitmap Index Scan on bench_8c0ffb09c49b4d8d_cover_pkey  (cost=0.00..7382.47 rows=251683 width=0) (actual time=63.449..63.449 rows=250000 loops=1)
+                                          Index Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                                          Buffers: shared hit=320 read=719 written=196
+      ->  Limit  (cost=0.46..2.55 rows=1 width=14) (actual time=0.092..0.092 rows=1 loops=720)
+            Buffers: shared hit=1862 read=690 written=373
+            ->  Result  (cost=0.46..2633.31 rows=1259 width=14) (actual time=0.092..0.092 rows=1 loops=720)
+                  One-Time Filter: (a.count > 0)
+                  Buffers: shared hit=1862 read=690 written=373
+                  ->  Index Only Scan using bench_8c0ffb09c49b4d8d_cover_idx on bench_8c0ffb09c49b4d8d_cover bench_8c0ffb09c49b4d8d_cover_1  (cost=0.46..2633.31 rows=1259 width=14) (actual time=0.089..0.089 rows=1 loops=720)
+                        Index Cond: ((series_id = '1'::bigint) AND (ts >= GREATEST(('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)), '2026-09-01 00:00:00+00'::timestamp with time zone)) AND (ts < CASE WHEN (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)) = date_trunc('hour'::text, ('2026-10-01 00:00:00+00'::timestamp with time zone - '00:00:00.000001'::interval), 'UTC'::text)) THEN '2026-10-01 00:00:00+00'::timestamp with time zone ELSE (('2026-09-01 00:00:00+00'::timestamp with time zone + ((steps.step)::double precision * '01:00:00'::interval)) + '01:00:00'::interval) END))
+                        Heap Fetches: 387
+                        Buffers: shared hit=1862 read=690 written=373
+    Planning:
+      Buffers: shared hit=29 read=2 written=2
+    Planning Time: 0.895 ms
+    JIT:
+      Functions: 27
+      Options: Inlining true, Optimization true, Expressions true, Deforming true
+      Timing: Generation 3.330 ms (Deform 0.500 ms), Inlining 33.857 ms, Optimization 283.872 ms, Emission 211.930 ms, Total 532.989 ms
+    Execution Time: 939.484 ms
+
+### indexesDisabled
+
+Measured EXPLAIN wall time: 30001.25 ms.
+
+Failure: canceling statement due to statement timeout. No successful execution plan is claimed.
+
+Note: 30-second timeout is a measured failure; no EXPLAIN output is fabricated..
+
+Plan output: Not measured.
+
+### series
+
+Measured EXPLAIN wall time: 0.96 ms.
+
+    Index Only Scan using series_pkey on series  (cost=0.14..8.16 rows=1 width=8) (actual time=0.036..0.037 rows=1 loops=1)
+      Index Cond: (id = '1'::bigint)
+      Heap Fetches: 1
+      Buffers: shared hit=2
+    Planning Time: 0.065 ms
+    Execution Time: 0.049 ms
+
+### latest
+
+Measured EXPLAIN wall time: 0.64 ms.
+
+    Limit  (cost=0.43..0.66 rows=1 width=14) (actual time=0.016..0.017 rows=1 loops=1)
+      Buffers: shared hit=4
+      ->  Index Scan Backward using measurements_pkey on measurements  (cost=0.43..58954.79 rows=251467 width=14) (actual time=0.015..0.015 rows=1 loops=1)
+            Index Cond: (series_id = '1'::bigint)
+            Buffers: shared hit=4
+    Planning Time: 0.063 ms
+    Execution Time: 0.028 ms
+
+### requestReplay
+
+Measured EXPLAIN wall time: 2.84 ms.
+
+    Index Scan using ingest_requests_pkey on ingest_requests  (cost=0.27..8.29 rows=1 width=108) (actual time=0.430..0.431 rows=1 loops=1)
+      Index Cond: ((idempotency_key)::text = 'load:ee1a8da8-4de7-45ac-acec-2e9de6412f7c:0'::text)
+      Buffers: shared read=3
+    Planning:
+      Buffers: shared hit=65 read=6
+    Planning Time: 1.135 ms
+    Execution Time: 0.443 ms
+
+## Machine
+
+- cpu: Intel(R) Core(TM) i3-7020U CPU @ 2.30GHz.
+- logicalCpus: 4.
+- ramBytes: 12442415104.
+- os: linux 6.8.0-51-generic.
+- node: v20.18.0.
+- postgres: PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86\_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit.
+- postgresInDocker: true.
+
+## Methodology, limitations and conclusions
+
+Methodology: Insert-kernel microbenchmark, 8 writers/5000 points per transaction, identical constraints and generated data. It excludes HTTP validation, hashing, idempotency-table writes, and post-insert classification; not an end-to-end throughput claim. Runs are sequential and cache/order noise must be considered. Tables are retained..
+
+Index experiment: PK stays in place. Covering-index write cost is measured with/without that optional index. Planner disabling demonstrates a no-index-read plan, not an actual dropped correctness constraint. No production index is changed; an index or rewrite is adopted only after reviewing measured full-scale evidence..
+
+Error: None recorded.
+
+Sequential trials are sensitive to cache/order noise. A timed-out index-disabled query is failed evidence, not a fabricated plan. Primary-key constraints stay intact; no production index was changed. This comparison alone does not justify adopting an index or certify a production improvement. Review the write/read trade-off and rerun API benchmarks after any adopted change.
+
+Retained experimental tables:
+
+- bench\_8c0ffb09c49b4d8d\_base.
+- bench\_8c0ffb09c49b4d8d\_values.
+- bench\_8c0ffb09c49b4d8d\_cover.
+
+## Original evidence
+
+Original local source: `comparison-1791350566416-edbef258-34b5-4854-a8a0-f0f1d15db163.json` in ignored artifacts. The measured results and raw plans are embedded above; reading this document does not require that file. Rerunning a comparison requires a manifest generated by a new load, not a previous local artifact.
+
+Generated after measurements, without accessing the database. Missing evidence remains Not measured.

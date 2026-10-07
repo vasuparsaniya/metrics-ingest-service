@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Pool } from 'pg';
 import { applyMigrations } from '../migrate';
 import { ApiClient } from './http';
+import { postgresSessionOptions } from '../../src/database/session-options';
 
 /** Uses the configured database unless an explicit name override is supplied. */
 export function benchmarkUrl(
@@ -64,7 +65,7 @@ export async function prepareDatabase(
   return new Pool({
     connectionString: databaseUrl,
     max: 2,
-    options: '-c timezone=UTC',
+    options: postgresSessionOptions,
   });
 }
 
@@ -163,6 +164,7 @@ export async function startServer(
 /** Captures the actual host and PostgreSQL runtime rather than hard-coded version claims. */
 export async function machine(pool: Pool): Promise<object> {
   const version = await pool.query<{ version: string }>('SELECT version()');
+  const jit = await pool.query<{ jit: string }>('SHOW jit');
   let postgresInDocker: boolean | null = null;
   let dockerDetectionError: string | null = null;
   try {
@@ -181,6 +183,7 @@ export async function machine(pool: Pool): Promise<object> {
     os: `${platform()} ${release()}`,
     node: process.version,
     postgres: version.rows[0]?.version,
+    postgresJit: jit.rows[0]?.jit,
     postgresInDocker,
     dockerDetectionError,
     poolMax: Number(process.env.DB_POOL_MAX ?? 12),

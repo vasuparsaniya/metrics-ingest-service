@@ -2,6 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { bucketSql } from '../../src/queries/bucket.sql';
+import { baselineBucketSql } from '../../src/queries/bucket.baseline.sql';
 import { LoadManifest } from './types';
 import { batchAt } from './generator';
 import { latency } from './metrics';
@@ -145,6 +146,7 @@ export async function compare(
   const baseSql = bucketSql.replaceAll('measurements', tableName(base));
   const coverSql = bucketSql.replaceAll('measurements', tableName(cover));
   const productionPlan = await plan(pool, bucketSql, parameters);
+  const beforeRewritePlan = await plan(pool, baselineBucketSql, parameters);
   const lookupPlans = {
     series: await plan(pool, 'SELECT id FROM series WHERE id = $1::bigint', [
       id,
@@ -164,6 +166,8 @@ export async function compare(
   const coverPlan = await plan(pool, coverSql, parameters);
   const queryTimings: Record<string, object> = {};
   for (const [label, sql] of [
+    ['beforeRewrite', baselineBucketSql],
+    ['afterRewrite', bucketSql],
     ['primaryOnly', baseSql],
     ['withCoveringIndex', coverSql],
   ] as const) {
@@ -221,6 +225,7 @@ export async function compare(
     },
     readPlans: {
       production: productionPlan,
+      beforeRewrite: beforeRewritePlan,
       primaryOnly: baselinePlan,
       withCoveringIndex: coverPlan,
       indexesDisabled: noIndexEvidence,

@@ -223,6 +223,45 @@ describe('metrics APIs against real PostgreSQL', () => {
     expect(response.body).toEqual({ accepted: 2, duplicates: 1, rejected: [] });
   });
 
+  it('disables JIT on application database connections', async () => {
+    const setting = await database.pool.query<{ jit: string }>('SHOW jit');
+    expect(setting.rows[0]?.jit).toBe('off');
+  });
+
+  it('keeps last distinct from maximum value and clips partial bucket boundaries', async () => {
+    const id = await createSeries();
+    await ingest([
+      { seriesId: id, ts: '2026-10-07T10:00:00Z', value: '999' },
+      { seriesId: id, ts: '2026-10-07T10:15:00Z', value: '17' },
+      { seriesId: id, ts: '2026-10-07T10:59:59.999999Z', value: '-4.9' },
+      { seriesId: id, ts: '2026-10-07T11:00:00Z', value: '23' },
+      { seriesId: id, ts: '2026-10-07T11:10:00Z', value: '1000' },
+    ]).expect(200);
+    const result = await request(server)
+      .get(`/v1/series/${id}/points`)
+      .query({
+        from: '2026-10-07T10:15:00Z',
+        to: '2026-10-07T11:10:00Z',
+        bucket: '1h',
+      })
+      .set('Authorization', auth)
+      .expect(200);
+    expect(result.body).toEqual([
+      expect.objectContaining({
+        count: 2,
+        sum: '12.1',
+        min: '-4.9',
+        max: '17',
+        last: { ts: '2026-10-07T10:59:59.999999Z', value: '-4.9' },
+      }),
+      expect.objectContaining({
+        count: 1,
+        sum: '23',
+        last: { ts: '2026-10-07T11:00:00.000000Z', value: '23' },
+      }),
+    ]);
+  });
+
   it('returns partial UTC buckets, empty null aggregates, late-arrival updates and latest by measurement time', async () => {
     const id = await createSeries();
     await ingest([

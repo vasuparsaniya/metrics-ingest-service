@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Pool, PoolClient } from 'pg';
 import { Environment } from '../config/environment';
+import { postgresSessionOptions } from './session-options';
 
 /** Owns the process-wide PostgreSQL pool and closes it during graceful shutdown. */
 @Injectable()
@@ -21,7 +22,7 @@ export class DatabaseService implements OnApplicationShutdown {
       idleTimeoutMillis: 30000,
       statement_timeout: environment.statementTimeoutMs,
       application_name: 'metrics-ingest-service',
-      options: '-c timezone=UTC',
+      options: postgresSessionOptions,
     });
     this.pool.on('error', (error: Error) => {
       this.logger.error({

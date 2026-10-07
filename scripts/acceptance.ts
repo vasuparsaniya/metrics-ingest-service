@@ -9,6 +9,7 @@ import { idleReads, requireEmptyMeasurements, runLoad } from './load/runner';
 import { summarize, latency, degradation } from './load/metrics';
 import { terminationSemantics } from './load/rss';
 import { generateAcceptanceReport } from './load/report';
+import { RestartScenarioError } from './load/restart-observer';
 import {
   concurrentScenario,
   partialScenario,
@@ -113,6 +114,12 @@ export async function main(): Promise<void> {
       directory,
     );
   } catch (error: unknown) {
+    if (error instanceof RestartScenarioError)
+      results.G = {
+        passed: false,
+        error: error.message,
+        failureReport: error.failureReport,
+      };
     failure = error instanceof Error ? error.message : String(error);
   } finally {
     await server?.stop();

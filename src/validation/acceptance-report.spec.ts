@@ -40,6 +40,7 @@ describe('readable acceptance report', () => {
     expect(md).toContain('[A evidence](data/cold.json)');
     expect(md).toContain('Not measured');
     expect(md).toContain('Database: Not recorded');
+    expect(md).toContain('POSIX SIGTERM recovery verified: Not measured');
   });
   it('renders partial failures without invented numbers', () => {
     const md = renderAcceptanceReport(

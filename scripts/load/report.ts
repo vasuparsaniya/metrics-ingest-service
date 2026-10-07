@@ -4,16 +4,16 @@ import { isRecord } from '../../src/ingest/ingest.validation';
 
 type Status = 'Pass' | 'Fail' | 'Not measured';
 
-function at(value: unknown, ...keys: string[]): unknown {
+export function at(value: unknown, ...keys: string[]): unknown {
   for (const key of keys) value = isRecord(value) ? value[key] : undefined;
   return value;
 }
-function number(value: unknown): number | undefined {
+export function number(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value)
     ? value
     : undefined;
 }
-function text(value: unknown): string {
+export function text(value: unknown): string {
   if (value === undefined || value === null) return 'Not recorded';
   const rendered =
     typeof value === 'string' ||
@@ -26,7 +26,7 @@ function text(value: unknown): string {
 function flag(value: unknown): Status {
   return value === true ? 'Pass' : value === false ? 'Fail' : 'Not measured';
 }
-function numeric(value: unknown, suffix: string): string {
+export function numeric(value: unknown, suffix: string): string {
   const n = number(value);
   return n === undefined ? 'Not measured' : `${n.toFixed(2)}${suffix}`;
 }
@@ -185,7 +185,12 @@ export function renderAcceptanceReport(
     link('A evidence', at(results, 'A', 'path')),
     link('B evidence', at(results, 'B', 'path')),
     link('Restart resume', at(results, 'G', 'resumedReport')),
+    link(
+      'Restart interruption and lock evidence',
+      at(results, 'G', 'interruptedReport'),
+    ),
     link('Restart replay', at(results, 'G', 'replayReport')),
+    link('Restart failure diagnostics', at(results, 'G', 'failureReport')),
   ].filter(Boolean);
   const machine = at(load, 'machine');
   return [
@@ -227,7 +232,7 @@ export function renderAcceptanceReport(
       ([id, label, status]) => `| ${id} | ${label} | ${status} |`,
     ),
     '',
-    `Restart semantics: ${text(at(input, 'termination', 'mode'))}; POSIX SIGTERM evidence: ${flag(at(input, 'termination', 'posixSigtermScenario'))}.`,
+    `Restart semantics: ${text(at(input, 'termination', 'mode'))}; POSIX SIGTERM recovery verified: ${at(results, 'G', 'passed') === true ? flag(at(input, 'termination', 'posixSigtermScenario')) : 'Not measured'}.`,
     '',
     '## Machine',
     '',
@@ -238,6 +243,7 @@ export function renderAcceptanceReport(
       'os',
       'node',
       'postgres',
+      'postgresJit',
       'postgresInDocker',
       'poolMax',
     ].map((key) => `- ${key}: ${text(at(machine, key))}.`),
