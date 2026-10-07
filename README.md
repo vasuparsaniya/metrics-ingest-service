@@ -330,7 +330,52 @@ Strategy comparisons are **insert-kernel microbenchmarks** with identical point 
 
 The following evidence is required by PDF §3, §5 and §8 and is preserved here because local artifacts are git-ignored. Full earlier summaries and rewrite JSON plans are retained in [measurement history](docs/measurement-history.md). Numbers below are measured, not estimates; execution/correctness success is separate from performance compliance.
 
-### Latest full-scale acceptance
+### Diagnostics overhead experiment and rollback
+
+All three runs below used 2,000,000 points, 5,000-point requests and eight writers
+on the same machine described below. All A–G correctness checks passed in each
+run. Throughput, row count and memory targets passed, but both latency targets
+still failed.
+
+| Measurement                                      | Earlier baseline | Diagnostics enabled | After removing diagnostics |
+| ------------------------------------------------ | ---------------: | ------------------: | -------------------------: |
+| Fresh insertion throughput (points/sec)          |        30,659.48 |           26,966.45 |                  29,988.61 |
+| Latest p95 during writes (ms; target ≤50)        |           177.75 |              227.68 |                     185.27 |
+| 30-day hourly bucket p95, idle (ms; target ≤150) |           174.00 |              305.99 |                     224.62 |
+| API sampled peak RSS (MiB)                       |           242.34 |              226.31 |                     226.18 |
+
+Run identifiers and UTC report timestamps (local evidence is retained under
+`artifacts/acceptance-<run-id>/REPORT.md`, but is not required to read this summary):
+
+- Baseline: `f62a9552-6d44-4bbf-bc8c-7ef115704bb5`,
+  `2026-10-07T17:42:23.789Z`; database `metrics_benchmark_cooperative_03`.
+- Diagnostics enabled: `0d2c8fb6-aa80-40d1-ba59-3c587ac24f5d`,
+  `2026-10-07T18:07:57.168Z`; database `metrics_benchmark_latency_diagnostic_02`.
+- Latest run, diagnostics removed: `5ab9f1f0-b4bc-4091-8d07-6479777296cf`,
+  `2026-10-07T18:19:34.510Z`; database `metrics_benchmark_without_diagnostics_01`.
+  Write duration: 66.69 seconds; idle latest p95: 5.44 ms; bucket p95 during
+  writes: 573.40 ms; replay inserted zero new rows. No load errors were reported.
+
+The temporary diagnostics monitored API/load-generator event-loop delay and
+collected phase timing histograms for latest connection acquisition/query
+round-trip and ingest hashing/validation/grouping. Latest connection management
+was also changed from `pool.query()` to explicit acquire/query/release to separate
+those timings. No SQL, indexes, pool sizes, processing chunk sizes or transaction
+boundaries were changed. Summary telemetry used the existing IPC channel;
+Markdown generation occurred after measurement, outside the timed workload.
+
+Diagnostics are measurement tools, not optimizations: monitoring and recording
+consume resources during the workload. Removing the changes recovered throughput
+and latest latency near the earlier baseline. This supports the recent changes
+contributing to the slowdown, but these sequential runs do not isolate their
+exact cost or rule out cache, garbage-collection, disk or machine-load variation.
+Bucket latency also recovered only partially. The diagnostic changes were
+removed, restoring the earlier code; ordinary benchmark RSS sampling remains.
+Any future diagnostics should be optional and evaluated with repeated enabled/
+disabled comparisons. This experiment does not resolve the remaining latency
+target failures.
+
+### Earlier full-scale acceptance baseline
 
 Acceptance execution: Pass. Performance: Fail.
 
