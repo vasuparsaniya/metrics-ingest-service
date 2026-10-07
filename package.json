@@ -18,6 +18,7 @@
     "test:e2e": "jest --config test/jest-e2e.config.cjs --runInBand",
     "db:up": "docker compose up -d --wait",
     "db:migrate": "ts-node scripts/migrate.ts",
+    "db:migrate:test": "ts-node scripts/migrate.ts --test",
     "check": "npm run typecheck && npm run lint && npm run test && npm run test:e2e && npm run build"
   },
   "dependencies": {

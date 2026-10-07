@@ -1,6 +1,6 @@
 # Ingest row validation
 
-This document records agreed API row-validation rules. Implementation is pending. Database types are described in [database-design.md](database-design.md); request-key behavior is described in [request-idempotency.md](request-idempotency.md).
+This document records implemented API row-validation rules. Database types are described in [database-design.md](database-design.md); request-key behavior is described in [request-idempotency.md](request-idempotency.md).
 
 ## Measurement values
 
@@ -9,7 +9,9 @@ This document records agreed API row-validation rules. Implementation is pending
 - Pass valid strings through parameterized SQL to PostgreSQL NUMERIC without converting them to JavaScript Number. The database stores numeric values, not text.
 - Reject invalid values by input index and reason; valid rows in the same batch remain eligible for insertion.
 - Validate decimal syntax and supported size before insertion. Never silently round unsupported input. NaN, infinity, booleans, and nonnumeric text are invalid.
-- Exact input grammar and handling of PostgreSQL's supported numeric bounds still need implementation decisions. The proposed 20 integer / 10 fractional digit cap and later 128-character value cap were not adopted.
+- Grammar: optional minus, one or more integer digits, and optional decimal point followed by one or more fractional digits. Scientific notation, whitespace, plus signs, `.5`, and `1.` are rejected.
+- Native NUMERIC bounds are 131072 significant integer digits and 16383 fractional digits. Leading integer zeroes do not consume significant digits. Normalize negative zero and insignificant decimal zeroes for point comparison; preserve original strings in request fingerprints.
+- The proposed 20 integer / 10 fractional digit cap and later 128-character value cap were not adopted.
 
 Decimal-string input avoids precision loss during ordinary JSON-number parsing. Pre-insert validation supports the PDF's partial-success requirement: relying only on database errors could abort the statement containing otherwise valid rows. Database constraints remain a safeguard where appropriate, rather than a substitute for row validation.
 
@@ -25,8 +27,8 @@ Decimal-string input avoids precision loss during ordinary JSON-number parsing. 
 
 Explicit timezone input prevents machine-local timezone ambiguity. UTC output provides a consistent representation, while supported precision preserves timestamp-based point identity. These format choices are documented assumptions; the PDF requires timestamp validation and correctness but does not prescribe the format.
 
-The proposed application year restriction of 0001–9999 was not adopted. Validate faithful storage within PostgreSQL's supported timestamp range; exact edge-case handling still needs implementation decisions.
+The proposed application year restriction of 0001–9999 was not adopted. The parser supports four-to-six-digit years with an optional sign, including astronomical year zero and expanded years. UTC normalization uses integer calendar arithmetic and bigint microseconds, checked against PostgreSQL's Julian-day bounds. Reject leap seconds, 24:00, and offsets outside PostgreSQL's supported ±15:59 range.
 
 ## Validation scope
 
-Use boundary validation in code and essential database constraints. Do not add the declined arbitrary numeric-length, year-range, or query-bucket caps. Previously agreed name and idempotency-key limits remain in effect. The PDF's 5,000-point maximum, per-row rejection, faithful storage, and overload shedding with HTTP 429 remain required. Concrete overload handling still needs implementation and measurement.
+Use boundary validation in code and essential database constraints. Do not add the declined arbitrary numeric-length, year-range, or query-bucket caps. Previously agreed name and idempotency-key limits remain in effect. The PDF's 5,000-point maximum, per-row rejection, faithful storage, and overload shedding with HTTP 429 are implemented. A separate 16 MiB transport-body ceiling bounds parser allocation without restricting individual decimal scale; initial admission and timeout behavior are documented in the README and still require full-load measurement.

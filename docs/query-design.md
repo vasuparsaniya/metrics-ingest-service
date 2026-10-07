@@ -1,6 +1,6 @@
 # Bucketed query contract
 
-This document records agreed behavior for `GET /v1/series/:id/points?from&to&bucket=`. Implementation and performance measurements are pending.
+This document records implemented behavior for `GET /v1/series/:id/points?from&to&bucket=` and the latest-point endpoint. Performance measurements are pending.
 
 ## Assignment requirements
 
@@ -52,9 +52,9 @@ Emit aligned buckets that overlap the requested range, including intervals conta
 }
 ```
 
-Count zero is the exact number of measurements present, not an invented measurement value. Aggregate values are null to distinguish missing data from actual zero-valued measurements or a real sum of zero. Emitting empty buckets lets dashboards show gaps.
+Count zero is the exact number of measurements present, not an invented measurement value. Aggregate values are null to distinguish missing data from actual zero-valued measurements or a real sum of zero. Emitting empty buckets lets dashboards show gaps. The implemented UTC timestamp field is `bucketStart`.
 
-The PDF states that nonexistent measurements are null, never zero, but does not explicitly require emitting empty buckets or define their count representation. This is our agreed interpretation. Each returned bucket also carries its UTC bucket-start timestamp; the final field name is still to be settled.
+The PDF states that nonexistent measurements are null, never zero, but does not explicitly require emitting empty buckets or define their count representation. This is our agreed interpretation.
 
 ## Last point in a bucket
 
@@ -76,7 +76,7 @@ The PDF requires last but does not prescribe its shape. Returning timestamp and 
 ## Numeric aggregate representation
 
 - Return sum, min, max, and last.value as decimal strings, preserving their numeric values without application rounding or JavaScript Number conversion. No fixed two-decimal display rule is applied.
-- Return count as an integer for supported bounded query results. Supported count bounds must keep JSON integer serialization exact.
+- Return count as a JSON integer while it is within Number.MAX_SAFE_INTEGER, otherwise as a decimal string to preserve exactness.
 - Calculate `AVG(value)` in PostgreSQL and return its NUMERIC result as a decimal string, without additional rounding in NestJS or a fixed response scale.
 - Include exact sum and count alongside avg. They retain the information needed to express the mathematical average as sum divided by count.
 - For an empty bucket, avg and other aggregate values are null as specified above.
@@ -105,7 +105,7 @@ The PDF requires the most recent point and p95 latency at most 50 ms during inge
 
 Query PostgreSQL directly, ordered by timestamp descending with a limit of one. The composite primary-key index on `(series_id, ts)` is the initial candidate for this query; verify its plan and latency under load rather than adding another index by assumption. Determine series existence and latest consistently, preferably in one statement to avoid unnecessary round trips.
 
-## Remaining decisions
+## Remaining verification
 
-- Query timestamp grammar and handling of supported database timestamp bounds.
-- Complete response shape, query SQL, and measurement-based index justification.
+- Query inputs use the same microsecond timestamp grammar as ingestion. Native numeric/timestamp result overflow returns 422, and statement timeout returns retryable 429.
+- Capture full-dataset SQL plans, indexing comparisons, and query latency before claiming performance targets.

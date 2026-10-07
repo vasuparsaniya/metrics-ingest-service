@@ -1,6 +1,6 @@
 # Stats endpoint contract
 
-The PDF requires `GET /v1/stats` to return row counts and per-series coverage. It does not prescribe a response shape or define coverage. The following is the agreed interpretation; implementation is pending.
+The PDF requires `GET /v1/stats` to return row counts and per-series coverage. It does not prescribe a response shape or define coverage. The following is the implemented interpretation.
 
 ## Response content
 
@@ -14,6 +14,6 @@ Coverage means the interval bounded by the earliest and latest stored measuremen
 
 ## Accuracy and implementation
 
-PostgreSQL calculates exact counts and timestamp bounds, not estimates from database statistics or application aggregation over raw measurements. Return totals and per-series statistics from a consistent database snapshot so concurrent writes do not produce contradictory counts. Exact JSON count encoding and final field names remain to be defined alongside supported result bounds.
+PostgreSQL calculates exact counts and timestamp bounds, not estimates from database statistics or application aggregation over raw measurements. One SQL statement returns totals and per-series statistics from a consistent snapshot. The response is `{ totalSeries, totalMeasurements, series: [{ seriesId, name, count, from, to }] }`. Counts are JSON integers while safe, otherwise decimal strings.
 
 No additional stats index or cached counter table is agreed. Measure the query first and justify any optimization without compromising late-arrival, replay, or restart correctness.

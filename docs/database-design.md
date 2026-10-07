@@ -1,6 +1,6 @@
 # Database design decisions
 
-This document records agreed choices as the schema is discussed. It is not yet a complete schema; migrations will follow once the remaining contracts are settled.
+This document records the agreed schema implemented by migrations 001–003. Performance and index comparisons are still pending.
 
 ## Series identifiers
 
@@ -23,7 +23,7 @@ VARCHAR(200) makes the size bound explicit in the schema and prevents unnecessar
 - `measurements.value`: `NUMERIC`, without a declared precision or scale.
 - Accept decimal-string input and validate rows before SQL insertion without converting values to JavaScript Number. Negative values and zero are supported. See [ingest-validation.md](ingest-validation.md) for API rules and pending bounds.
 
-NUMERIC preserves accepted finite decimal values and exact sums, matching the assignment's accuracy requirement. DOUBLE PRECISION approximates many decimal values. No domain-specific decimal-place limit is given in the PDF, so numeric validation bounds remain to be agreed rather than assuming six decimal places. Throughput, latency, and storage costs must be measured.
+NUMERIC preserves accepted finite decimal values and exact sums within PostgreSQL bounds, matching the assignment's accuracy requirement. DOUBLE PRECISION approximates many decimal values. No domain-specific decimal-place limit is imposed; validation uses native storage bounds. Throughput, latency, and storage costs must be measured.
 
 ## Measurement timestamps
 
@@ -32,7 +32,7 @@ NUMERIC preserves accepted finite decimal values and exact sums, matching the as
 - Equivalent timezone-offset representations of the same instant identify the same point within a series.
 - Preserve microseconds during validation, identity comparison, and serialization; do not round-trip through JavaScript Date where it would discard sub-millisecond precision.
 - Accept ISO 8601 strings with explicit `Z` or timezone offsets and optional fractional seconds up to six digits; validate real calendar dates before insertion. See [ingest-validation.md](ingest-validation.md).
-- Reject finer-than-supported timestamp precision instead of silently rounding it. Accepted timestamp range and edge-case grammar remain to be defined.
+- Reject finer-than-supported timestamp precision instead of silently rounding it. Native bounds and expanded signed years are supported; leap seconds and 24:00 are rejected. See row validation for the implemented grammar.
 
 TIMESTAMPTZ represents an absolute instant, which suits timestamp-based point identity and ordering across timezone offsets. Plain TIMESTAMP stores a clock reading without timezone semantics and would require a separate UTC-only convention. The PDF does not require a millisecond limit, so the earlier TIMESTAMPTZ(3) proposal was not adopted.
 
@@ -59,9 +59,9 @@ HTTP header validation, request fingerprinting, replay, concurrency, transaction
 
 Measurement rows do not require a foreign key to request records: point identity and request replay are separate responsibilities. The request-table primary key is the only planned index for this table; no cleanup index is needed under the agreed retention policy. The write path must populate `response_body` before committing.
 
-## Decisions still open
+## Implementation and remaining verification
 
-- Numeric validation grammar and size bounds; see [ingest-validation.md](ingest-validation.md).
-- Timestamp input grammar and supported range.
+- Numeric and timestamp validation follow [ingest-validation.md](ingest-validation.md).
 - Query boundaries, UTC bucket alignment, empty-bucket behavior, bucket last-point shape, aggregate representation, and latest-point responses are finalized in [query-design.md](query-design.md). The finite precision of repeating averages is an explicit assumption.
-- Final constraints and indexes, with measurement-based justification.
+- Only primary-key indexes are present. Measure plans and write cost before adding or deleting indexes.
+- Performance targets and full-volume reconciliation remain unverified.

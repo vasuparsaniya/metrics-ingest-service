@@ -5,12 +5,15 @@ import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import { readEnvironment } from '../src/config/environment';
 
-async function migrate(): Promise<void> {
-  const environment = readEnvironment(process.env);
+/** Applies checksummed migrations atomically to the selected database. */
+export async function applyMigrations(
+  databaseUrl: string,
+  connectTimeoutMs = 2000,
+): Promise<void> {
   const pool = new Pool({
-    connectionString: environment.databaseUrl,
+    connectionString: databaseUrl,
     max: 1,
-    connectionTimeoutMillis: environment.connectTimeoutMs,
+    connectionTimeoutMillis: connectTimeoutMs,
   });
   try {
     const client = await pool.connect();
@@ -72,7 +75,22 @@ async function migrate(): Promise<void> {
   }
 }
 
-void migrate().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : 'Migration failed');
-  process.exitCode = 1;
-});
+async function run(): Promise<void> {
+  const test = process.argv.includes('--test');
+  if (test && !process.env.TEST_DATABASE_URL)
+    throw new Error('TEST_DATABASE_URL is required');
+  const environment = readEnvironment({
+    ...process.env,
+    DATABASE_URL: test
+      ? process.env.TEST_DATABASE_URL
+      : process.env.DATABASE_URL,
+  });
+  await applyMigrations(environment.databaseUrl, environment.connectTimeoutMs);
+}
+
+if (require.main === module) {
+  void run().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : 'Migration failed');
+    process.exitCode = 1;
+  });
+}

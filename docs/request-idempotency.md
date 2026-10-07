@@ -1,6 +1,6 @@
 # Ingest request idempotency
 
-This document records the agreed HTTP request behavior for `POST /v1/ingest`. It is a design contract; implementation and concurrency tests are still pending. Column types and constraints are documented in [database-design.md](database-design.md).
+This document records implemented HTTP request behavior for `POST /v1/ingest`, covered by real-Postgres concurrency and restart tests. Full-volume replay measurements are pending. Column types and constraints are documented in [database-design.md](database-design.md).
 
 ## Assignment requirement and our interpretation
 
@@ -20,7 +20,7 @@ GET endpoints do not use these keys or saved responses; they query current datab
 
 Generate one SHA-256 fingerprint of a deterministic representation of the complete request body. Ignore JSON whitespace and object-property order. Preserve point array order because rejection indexes and first-occurrence duplicate precedence depend on it.
 
-Reordering points while reusing a key is a content mismatch. Whether equivalent numeric or timestamp spellings share a fingerprint remains open.
+Reordering points while reusing a key is a content mismatch. Preserve original string contents: equivalent numeric or timestamp spellings still produce different request fingerprints. This keeps request identity deterministic for invalid rows too. Point-level identity separately uses normalized numeric values and UTC instants.
 
 The application generates the hash; the client does not supply it. Do not scan stored measurements to compare request bodies or store the original measurement payload for this purpose.
 
@@ -49,7 +49,7 @@ PostgreSQL's unique constraint coordinates concurrent claims. A second claim can
 
 An uncommitted request record is not visible to other transactions. We do not use a separately committed PROCESSING state, polling worker, or stale-state recovery job. The temporarily empty response must be populated before commit and must never be returned as a successful replay.
 
-Bounded waiting, admission limits, retryable timeout responses, and consistent measurement insertion order still need implementation and real-Postgres tests. A database wait alone does not establish a deadlock; the complete locking strategy must be tested.
+The implementation reserves four pool connections from active ingest capacity (eight ingests with a 12-connection pool), uses a two-second lock timeout, and returns retryable 429 responses with Retry-After. Candidate identities are inserted in series/time order to avoid lock inversion. Real-Postgres tests cover overlapping reversed batches and contended keys. A database wait alone does not establish a deadlock; full-load verification remains pending.
 
 ## Retention
 
@@ -57,7 +57,7 @@ Keep request records without automatic expiry for the assignment. This preserves
 
 Removing a record would allow that key to be processed again. Point uniqueness would still prevent duplicate measurements, but the response counts could change. No cleanup index or expiry job is needed for this scope.
 
-## Remaining decisions
+## Remaining verification
 
-- Exact canonicalization rules for equivalent numeric and timestamp spellings, including invalid rows.
-- Wait-time limits, admission limits, and retryable timeout response details.
+- Measure replay speed and contention behavior against the full dataset.
+- Tune initial admission and timeout settings using measured writer/read latency.

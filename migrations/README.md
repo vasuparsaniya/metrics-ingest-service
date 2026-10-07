@@ -1,6 +1,6 @@
 # SQL migrations
 
-Add schema migrations here after the measurement contracts are decided. Name each file with a sortable numeric prefix, such as `001_create_series.sql`.
+The initial migrations create series, measurements, and ingest request records. Name future files with a sortable numeric prefix. Measurements use the composite `(series_id, ts)` primary key; no extra indexes have been added without measurements.
 
 Run `npm run db:migrate` from the project root. The runner records file names and SHA-256 checksums in `schema_migrations`, skips unchanged applied files, and rejects edits to applied migrations. Add a new migration instead of editing an applied one.
 
