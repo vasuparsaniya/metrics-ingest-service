@@ -13,7 +13,7 @@ function points(length = 5000): unknown[] {
 }
 
 describe('cooperative batch processing', () => {
-  it.each([0, 1, 249, 250, 251, 500, 5000])(
+  it.each([0, 1, 99, 100, 101, 249, 250, 251, 500, 5000])(
     'preserves canonical array separators and legacy hash bytes for %i points',
     async (length) => {
       // Generated property order already matches the legacy alphabetical key order.
@@ -22,6 +22,21 @@ describe('cooperative batch processing', () => {
         .update(JSON.stringify(body))
         .digest();
       expect(await fingerprint(body)).toEqual(previous);
+    },
+  );
+
+  it.each(['hashing', 'validation'])(
+    'yields to I/O during %s of 101 points with 100-point chunks',
+    async (kind) => {
+      let ran = false;
+      const callback = yieldToIo().then(() => {
+        ran = true;
+      });
+      if (kind === 'hashing') await fingerprint({ points: points(101) });
+      else await validatePoints(points(101));
+      const ranBeforeCompletion = ran;
+      await callback;
+      expect(ranBeforeCompletion).toBe(true);
     },
   );
 
@@ -67,12 +82,12 @@ describe('cooperative batch processing', () => {
 
   it('keeps original rejection indexes at and across chunk boundaries', async () => {
     const rows = points();
-    const invalid = [249, 250, 499, 500, 4999];
+    const invalid = [99, 100, 101, 199, 200, 249, 250, 499, 500, 4999];
     for (const index of invalid)
       rows[index] = { seriesId: '1', ts: 'bad', value: '1' };
     const result = await validatePoints(rows);
     expect(result.rejected.map((row) => row.index)).toEqual(invalid);
-    expect(result.valid).toHaveLength(4995);
+    expect(result.valid).toHaveLength(5000 - invalid.length);
   });
 
   it('groups equal and conflicting identities across validation chunks', async () => {

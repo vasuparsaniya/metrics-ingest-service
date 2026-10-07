@@ -1,6 +1,6 @@
 # Cooperative ingest processing
 
-Approved approach: process CPU-heavy work in 250-point chunks and yield to Node's
+Original approved approach: process CPU-heavy work in 250-point chunks and yield to Node's
 event loop between chunks. This is internal scheduling, not a new HTTP batch limit,
 SQL batch boundary, transaction boundary, queue, or service.
 
@@ -43,6 +43,67 @@ SQL batch boundary, transaction boundary, queue, or service.
       with acceptance; they can remove its compiled entry point.
 
 No commit or push is authorized by this implementation step.
+
+## Follow-up experiment: 100-point chunks
+
+Approved scope: change only `processingChunkSize` in
+`src/ingest/ingest.processing.ts` from 250 to 100. Both cooperative hashing and
+validation consume that constant. More frequent `setImmediate` yields may help
+latest reads during writes, but could reduce throughput. No guaranteed gain is
+claimed; synchronous JSON parsing, grouping and driver processing remain.
+
+Preserve the 5,000-point request limit, eight benchmark writers, pool size,
+canonical hash bytes, validation bounds, SQL, indexes and one transaction per
+batch. Do not introduce diagnostics, dependencies or workers. Keep the earlier
+250-boundary regression tests and add 99/100/101-boundary cases.
+
+- [x] Add regressions proving 101-point hashing and validation yield to I/O;
+      both failed against 250 before changing the constant, then passed at 100.
+- [x] Change the constant, update current README/validation documentation and
+      run `npm run check` plus formatting checks serially. Typecheck, lint, build,
+      84 unit tests and 24 integration/child-process tests passed (108 total).
+- [x] User runs fresh acceptance and compares against
+      `569d4d48-34e2-48c4-92f6-64c67987ddc4`: 47,089.26 points/sec,
+      latest p95 118.30 ms, idle bucket p95 179.32 ms. Record the throughput/
+      latency trade-off before deciding whether to retain 100-point chunks.
+
+No commit/push or automatic full acceptance run is authorized for this experiment.
+
+### Measured 100-point outcome
+
+User-run acceptance `9b3a08d2-2b97-42d1-a8c1-2a86f01082ce`, reported at
+`2026-10-07T19:16:07.608Z` (UTC), database `metrics_benchmark_chunk_100_01`.
+Original local evidence is retained under
+`artifacts/acceptance-9b3a08d2-2b97-42d1-a8c1-2a86f01082ce/REPORT.md`
+and `acceptance.json`; this tracked summary does not require those ignored files.
+
+| Measurement                         | Compact-result baseline, chunks 250 | Chunks 100 | Target                  |
+| ----------------------------------- | ----------------------------------: | ---------: | ----------------------- |
+| Fresh throughput (points/sec)       |                           47,089.26 |  45,419.21 | ≥20,000: pass           |
+| Latest p95 during writes (ms)       |                              118.30 |      97.42 | ≤50: still fails        |
+| 30-day hourly bucket p95, idle (ms) |                              179.32 |     183.45 | ≤150: still fails       |
+| Write duration (seconds)            |                               42.47 |      44.03 | Informational           |
+| API sampled peak RSS (MiB)          |                              232.76 |     242.87 | <512: pass              |
+| Stored measurement rows             |                           2,000,000 |  2,000,000 | Exactly 2,000,000: pass |
+
+Same machine: i3-7020U, four logical CPUs, 12,442,411,008 bytes RAM, Linux
+6.8.0-51-generic, Node 20.18.0, PostgreSQL 17.11 in Docker, pool 12, JIT off.
+Both runs used 5,000-point requests and eight writers, without extra latency
+diagnostics. The only production change was processingChunkSize 250 to 100.
+
+Observed latest p95 decreased approximately 17.7%, while throughput decreased
+approximately 3.5%. All A–G correctness scenarios passed, including concurrent
+deduplication, unchanged replay and SIGTERM restart recovery; no acceptance/load
+errors were reported. Additional measurements: idle latest p95 5.70 ms, bucket
+p95 during writes 427.70 ms, replay processed input 144,921.66 points/sec with
+zero newly inserted rows (not fresh insertion throughput).
+
+Decision: retain 100-point chunks for this observed read-latency/throughput
+trade-off. One sequential comparison does not establish consistent improvement
+or isolate cache/machine variation. Idle bucket SQL was unchanged; neither
+latency target is met, so acceptance execution passed but performance compliance
+failed. The user subsequently authorized recording this outcome and committing
+the change; no push was requested.
 
 ### Cooperative processing repeat-run validation
 

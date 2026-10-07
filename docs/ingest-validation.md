@@ -31,7 +31,8 @@ The proposed application year restriction of 0001–9999 was not adopted. The pa
 
 ## Validation scope
 
-The HTTP path validates in 250-point internal chunks and yields to Node's I/O loop
+The HTTP path currently validates in 100-point internal chunks (a scheduling
+experiment reduced from 250) and yields to Node's I/O loop
 between chunks. Successful repeated ID and decimal normalization is reused only
 inside the same batch; timestamps, invalid inputs and every original rejection
 index retain the same validation rules. Chunking does not create separate database

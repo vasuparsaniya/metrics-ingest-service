@@ -236,7 +236,7 @@ Application and measurement/comparison connections start with UTC and `jit=off`;
 ### Cooperative ingest scheduling
 
 Ingest hashing and validation now yield to Node's I/O loop between internal
-250-point chunks. SHA-256 consumes the same canonical bytes as before, preserving
+100-point chunks (the current scheduling experiment, reduced from 250). SHA-256 consumes the same canonical bytes as before, preserving
 existing saved request hashes. Successful ID/decimal normalization is cached only
 within the current batch, and normalized decimal-string IDs are sorted numerically
 without repeated BIGINT conversions. Pure validation/grouping retain original
@@ -244,10 +244,33 @@ rejection indexes and first-occurrence precedence across chunks.
 
 This scheduling boundary does not change the 5,000-point request limit, the eight
 admitted ingests, SQL batch size, or the single atomic batch transaction. It adds no
-queue, worker, process or dependency. A 250-point chunk is not a guaranteed
+queue, worker, process or dependency. A 100-point chunk is not a guaranteed
 millisecond budget: large fields, JSON parsing, grouping/sorting, and pg result
 processing can still block. See [processing plan](docs/ingest-processing-plan.md)
 for tests and before/after measurement scope.
+
+The 100-point experiment was measured in full-scale run
+`9b3a08d2-2b97-42d1-a8c1-2a86f01082ce`, reported at
+`2026-10-07T19:16:07.608Z` (UTC), database `metrics_benchmark_chunk_100_01`.
+
+| Measurement                         | 250-point baseline (`569d4d48…`) | 100-point chunks (`9b3a08d2…`) | Target        |
+| ----------------------------------- | -------------------------------: | -----------------------------: | ------------- |
+| Fresh throughput (points/sec)       |                        47,089.26 |                      45,419.21 | ≥20,000: pass |
+| Latest p95 during writes (ms)       |                           118.30 |                          97.42 | ≤50: fail     |
+| 30-day hourly bucket p95, idle (ms) |                           179.32 |                         183.45 | ≤150: fail    |
+| Write duration (seconds)            |                            42.47 |                          44.03 | Informational |
+| API sampled peak RSS (MiB)          |                           232.76 |                         242.87 | <512: pass    |
+
+Both runs used 2,000,000 points, 5,000-point requests, eight writers and unchanged
+SQL/pool/index settings on the same recorded machine. All A–G correctness checks
+passed, exactly 2,000,000 rows were stored, replay inserted zero new rows and no
+acceptance/load errors were reported. Observed latest p95 decreased 17.7% at a
+3.5% throughput cost. This supports retaining 100-point chunks for the read-latency
+trade-off, but repeated runs are needed to confirm consistency. Idle bucket SQL
+was unchanged and its latency was essentially unchanged; both latency targets
+remain unmet. Full details are preserved in the
+[processing plan](docs/ingest-processing-plan.md), independently of ignored
+artifacts. Typecheck, lint, build, formatting and 108 tests passed before the run.
 
 ### Readable run summary
 

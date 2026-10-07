@@ -3,7 +3,7 @@ import { Rejection, ValidPoint } from './ingest.types';
 import { createPointValidator, validatePoints } from './ingest.validation';
 
 /** Internal scheduling boundary, independent of the 5000-point HTTP/SQL batch size. */
-export const processingChunkSize = 250;
+export const processingChunkSize = 100;
 
 /** Preserves original indexes while giving socket and database callbacks time to run. */
 export async function validatePointsCooperatively(
