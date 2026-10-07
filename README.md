@@ -332,13 +332,41 @@ The following evidence is required by PDF §3, §5 and §8 and is preserved here
 
 ### Diagnostics overhead experiment and rollback
 
-The next optimization under verification is a fresh-insert fast path: when the
+The subsequent measured optimization is a fresh-insert fast path: when the
 measurement INSERT reports that every deduplicated candidate was inserted, skip
 the subsequent classification SELECT and derive accepted/internal-duplicate
 counts from the candidate groups. Mixed or all-existing batches retain the
 original classification query. Validation, request replay, exact values and the
-single transaction are unchanged. Performance gains are not yet measured; use
-the diagnostics-removed run below as the baseline.
+single transaction are unchanged. Run `22d030f8-8bbd-4e1e-84df-07e908d5523a`
+measured 39,941.76 points/sec and latest p95 130.71 ms versus the diagnostics-removed
+baseline below (29,988.61 points/sec and 185.27 ms). All A–G checks passed, but
+latest still missed 50 ms and idle buckets measured 177.13 ms, missing 150 ms.
+See [the fast-path plan](docs/fresh-insert-fast-path-plan.md) for the full comparison
+and limits of the single-run evidence.
+
+The next measured change reduces INSERT response traffic: a SQL CTE returns one count
+row and no identities for fully fresh batches, returning inserted identities only
+when mixed-batch classification needs them. The outer SELECT always returns one
+row; its row count is not the inserted count. Transaction and fallback behavior
+remain unchanged. Run `569d4d48-34e2-48c4-92f6-64c67987ddc4`, reported at
+`2026-10-07T18:53:24.476Z` (UTC), used `metrics_benchmark_compact_insert_01`.
+
+| Measurement                         | Previous fast path | Compact result | Target        |
+| ----------------------------------- | -----------------: | -------------: | ------------- |
+| Fresh throughput (points/sec)       |          39,941.76 |      47,089.26 | ≥20,000: pass |
+| Latest p95 during writes (ms)       |             130.71 |         118.30 | ≤50: fail     |
+| 30-day hourly bucket p95, idle (ms) |             177.13 |         179.32 | ≤150: fail    |
+| Write duration (seconds)            |              50.07 |          42.47 | Informational |
+| API sampled peak RSS (MiB)          |             234.09 |         232.76 | <512: pass    |
+
+All A–G checks passed; exactly 2,000,000 points were stored, replay inserted zero
+new rows, and no acceptance/load errors were reported. Observed throughput rose
+17.9% and latest p95 fell 9.5%; repeated runs are needed to confirm consistency.
+The unchanged idle bucket SQL showed essentially unchanged latency. Both latency
+targets remain unmet. Full details are preserved in
+[the compact-result plan](docs/compact-insert-result-plan.md), independently of
+ignored local artifacts. Typecheck, lint, build, formatting and 103 tests passed
+before this benchmark.
 
 All three runs below used 2,000,000 points, 5,000-point requests and eight writers
 on the same machine described below. All A–G correctness checks passed in each

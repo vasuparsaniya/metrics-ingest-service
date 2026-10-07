@@ -11,6 +11,7 @@ import { readEnvironment } from '../src/config/environment';
 import { DatabaseService } from '../src/database/database.service';
 import { isRecord } from '../src/ingest/ingest.validation';
 import { configureHttp } from '../src/http/configure-http';
+import { insertSummarySql } from '../src/ingest/ingest.insert.sql';
 
 describe('metrics APIs against real PostgreSQL', () => {
   let app: INestApplication;
@@ -101,6 +102,58 @@ describe('metrics APIs against real PostgreSQL', () => {
       .set('Authorization', auth)
       .send({ name: 'x'.repeat(201) })
       .expect(400);
+  });
+
+  it('returns one compact insert summary for fresh, mixed and existing batches', async () => {
+    const id = await createSeries();
+    const client = await database.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const times = Array.from(
+        { length: 5000 },
+        (_, index) => `2026-10-07T00:00:00.${String(index).padStart(6, '0')}Z`,
+      );
+      const fresh = await client.query(insertSummarySql, [
+        Array<string>(5000).fill(id),
+        times,
+        Array<string>(5000).fill('1'),
+      ]);
+      expect(fresh.rowCount).toBe(1);
+      expect(fresh.rows).toEqual([{ insertedCount: 5000, identities: [] }]);
+
+      const newTime = '2026-10-07T00:00:01.000001Z';
+      const mixed = await client.query(insertSummarySql, [
+        [id, id],
+        [times[0], newTime],
+        ['9', '-2.123456789'],
+      ]);
+      const expected = await client.query<{ identity: string }>(
+        "SELECT series_id::text || ':' || ts::text AS identity FROM measurements WHERE series_id=$1 AND ts=$2",
+        [id, newTime],
+      );
+      expect(mixed.rows).toEqual([
+        { insertedCount: 1, identities: [expected.rows[0]?.identity] },
+      ]);
+      const existing = await client.query(insertSummarySql, [
+        [id],
+        [newTime],
+        ['99'],
+      ]);
+      expect(existing.rows).toEqual([{ insertedCount: 0, identities: [] }]);
+      const unchanged = await client.query<{ value: string }>(
+        'SELECT value::text FROM measurements WHERE series_id=$1 AND ts=$2',
+        [id, newTime],
+      );
+      expect(unchanged.rows[0]?.value).toBe('-2.123456789');
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+    const count = await database.pool.query<{ count: string }>(
+      'SELECT count(*)::text FROM measurements WHERE series_id=$1',
+      [id],
+    );
+    expect(count.rows[0]?.count).toBe('0');
   });
 
   it('replays the original response, rejects key mismatch, and deduplicates across different keys', async () => {

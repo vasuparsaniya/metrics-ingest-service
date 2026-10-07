@@ -22,11 +22,15 @@ describe('fresh-insert classification fast path', () => {
     query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
     query.mockResolvedValueOnce({ rows: [{ id: '1' }], rowCount: 1 });
     query.mockResolvedValueOnce({
-      rows: Array.from({ length: inserted }, (_, index) => ({
-        series_id: '1',
-        ts: String(index),
-      })),
-      rowCount: inserted,
+      rows: [
+        {
+          insertedCount: inserted,
+          identities: stored
+            ? Array.from({ length: inserted }, (_, index) => `1:${index}`)
+            : [],
+        },
+      ],
+      rowCount: 1,
     });
     if (stored)
       query.mockResolvedValueOnce({ rows: stored, rowCount: stored.length });

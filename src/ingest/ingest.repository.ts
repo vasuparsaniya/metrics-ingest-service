@@ -4,6 +4,7 @@ import { DatabaseService } from '../database/database.service';
 import { groupPoints, isRecord } from './ingest.validation';
 import { validatePointsCooperatively } from './ingest.processing';
 import { IngestResponse, PointGroup } from './ingest.types';
+import { insertSummarySql } from './ingest.insert.sql';
 
 function savedResponse(value: unknown): IngestResponse {
   if (
@@ -107,18 +108,15 @@ export class IngestRepository {
     const ids = groups.map((group) => group.point.seriesId);
     const times = groups.map((group) => group.point.ts);
     const values = groups.map((group) => group.point.value);
-    const inserted = await client.query<{ series_id: string; ts: string }>(
-      `
-      INSERT INTO measurements (series_id, ts, value)
-      SELECT series_id, ts, value FROM unnest($1::bigint[], $2::timestamptz[], $3::numeric[]) AS input(series_id, ts, value)
-      ORDER BY series_id, ts
-      ON CONFLICT (series_id, ts) DO NOTHING
-      RETURNING series_id::text, ts::text`,
-      [ids, times, values],
-    );
+    const inserted = await client.query<{
+      insertedCount: number;
+      identities: string[];
+    }>(insertSummarySql, [ids, times, values]);
+    const summary = inserted.rows[0];
+    if (!summary) throw new Error('Measurement insert summary is missing');
     // DO NOTHING skips every existing identity, including concurrent conflicts.
-    // An equal row count proves all deduplicated candidates were newly inserted.
-    if (inserted.rowCount === groups.length) {
+    // Use the CTE's inserted count, not the outer SELECT's one-row result count.
+    if (summary.insertedCount === groups.length) {
       response.accepted += groups.length;
       for (const group of groups)
         response.duplicates += group.indexes.length - 1;
@@ -140,9 +138,7 @@ export class IngestRepository {
     if (stored.rows.length !== groups.length)
       throw new Error('An inserted or conflicting point is missing');
     // Inserted rows are identified by the same typed database identity, never xmin heuristics.
-    const newIdentities = new Set(
-      inserted.rows.map((row) => `${row.series_id}:${row.ts}`),
-    );
+    const newIdentities = new Set(summary.identities);
     for (const row of stored.rows) {
       const position = Number(row.ordinal) - 1;
       const group = groups[position];
