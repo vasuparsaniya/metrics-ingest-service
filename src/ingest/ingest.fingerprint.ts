@@ -45,7 +45,7 @@ async function writeCanonical(hash: Hash, value: unknown): Promise<void> {
   } else hash.update(canonical(value));
 }
 
-/** Streams the unchanged canonical JSON bytes, yielding between 250 array elements. */
+/** Streams unchanged canonical JSON bytes, yielding between processing chunks. */
 export async function fingerprint(body: unknown): Promise<Buffer> {
   const hash = createHash('sha256');
   await writeCanonical(hash, body);

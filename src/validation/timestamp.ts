@@ -104,7 +104,13 @@ export function timestamp(value: unknown): Timestamp {
   if (micros < -210866803200000000n || micros >= 9224318016000000000n) {
     throw new Error('timestamp exceeds PostgreSQL storage bounds');
   }
-  return { micros, sql: sqlTimestamp(micros) };
+  // Ordinary UTC input already contains the validated calendar fields. Reuse
+  // them rather than decomposing the microseconds into those fields again.
+  const sql =
+    zone === 'Z' && year > 0 && match[1]?.length === 4
+      ? `${value.slice(0, 10)} ${value.slice(11, 19)}.${(match[7] ?? '').padEnd(6, '0')}+00`
+      : sqlTimestamp(micros);
+  return { micros, sql };
 }
 
 /** Produces UTC ISO text directly in SQL, preserving microseconds and expanded years. */

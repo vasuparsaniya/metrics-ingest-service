@@ -308,6 +308,76 @@ were reported. Idle latest p95 was 3.60 ms and bucket p95 during writes was
 and 119 tests passed before this run. These embedded measurements remain readable
 without the ignored artifacts.
 
+### UTC timestamp normalization experiment
+
+After full calendar, timezone and PostgreSQL-bound validation, ordinary positive
+four-digit-year `Z` timestamps reuse their input calendar fields for SQL text.
+Exact microseconds are still computed for point identity and range validation;
+fractions are padded to six digits without rounding. Signed/expanded years, BC
+dates and timezone offsets retain the existing general formatter. This avoids
+the redundant microseconds-to-calendar conversion without changing the API,
+database schema, request fingerprint or transaction boundaries.
+
+Unprofiled run `f2ac9857-d440-4412-afbc-90e2add25e68`, measured at
+`2026-10-08T02:18:13.571Z` (UTC), used database
+`metrics_benchmark_timestamp_fast_path_01`.
+
+| Measurement                         | Previous (`46e89655…`) | UTC fast path (`f2ac9857…`) | Target        |
+| ----------------------------------- | ---------------------: | --------------------------: | ------------- |
+| Fresh throughput (points/sec)       |              46,781.87 |                   51,463.39 | ≥20,000: pass |
+| Latest p95 during writes (ms)       |                  85.62 |                       72.75 | ≤50: fail     |
+| 30-day hourly bucket p95, idle (ms) |                 151.96 |                      152.01 | ≤150: fail    |
+| Write duration (seconds)            |                  42.75 |                       38.86 | Informational |
+| API sampled peak RSS (MiB)          |                 247.03 |                      239.34 | <512: pass    |
+
+Both runs used 2,000,000 points, 5,000-point requests, eight writers, pool 12 and
+JIT off on the same recorded machine/software configuration. Observed throughput
+increased 10.0% and latest p95 decreased 15.0%. Retain the fast path, with repeated
+runs needed to confirm consistency; this single comparison does not isolate all
+machine/cache variation. Bucket SQL was unchanged and idle bucket latency was
+essentially unchanged. Both latency targets remain unmet.
+
+All A–G correctness checks and POSIX SIGTERM recovery passed. Exactly 2,000,000
+rows were stored, replay inserted zero new rows, and no acceptance/load errors
+were reported. Replay processed input at 176,276.06 points/sec, not fresh insert
+throughput. Bucket p95 during writes was 389.37 ms; idle latest p95 was 3.43 ms.
+Latest/bucket degradation was 2021.23%/156.14%. Typecheck, lint, build and 147
+tests passed before this measurement. These results do not depend on ignored
+artifacts being submitted. See
+[the timestamp plan](docs/timestamp-normalization-plan.md).
+
+### Canonical point hashing experiment
+
+The fixed-key fast path for standard string-valued points was measured, then
+removed at the user's request. Generic canonical sorting is restored; whole-body
+SHA-256, original spellings, extra fields, array order and 100-point yielding
+remain unchanged. The timestamp fast path is retained.
+
+| Measurement                         | Timestamp baseline (`f2ac9857…`) | Hash run 1 (`879b1b53…`) | Hash run 2 (`8f2d787e…`) |
+| ----------------------------------- | -------------------------------: | -----------------------: | -----------------------: |
+| Fresh throughput (points/sec)       |                        51,463.39 |                54,610.45 |                49,426.24 |
+| Latest p95 during writes (ms)       |                            72.75 |                    98.88 |                   101.58 |
+| 30-day hourly bucket p95, idle (ms) |                           152.01 |                   178.80 |                   172.75 |
+| Write duration (seconds)            |                            38.86 |                    36.62 |                    40.46 |
+| API sampled peak RSS (MiB)          |                           239.34 |                   228.22 |                   225.80 |
+
+Both hashing runs stored exactly 2,000,000 rows, passed A–G including POSIX
+SIGTERM recovery, replayed without new rows and reported no acceptance/load
+errors. Settings remained 5,000-point requests, eight writers, pool 12 and JIT off
+on the same recorded machine/software configuration. Lower sampled memory did
+not establish a consistent throughput or read-latency benefit. Both latency
+targets failed. Sequential runs cannot prove causation. The removal comparison
+`25b93ce8-9e25-4d77-9cef-88bc0c989cf2`, measured at UTC
+`2026-10-08T02:53:20.681Z` in `metrics_benchmark_without_hash_fast_path_01`,
+returned 50,570.24 points/sec, latest write p95 78.92 ms, idle bucket p95 166.48 ms,
+write duration 39.55 seconds and peak API RSS 239.03 MiB. All A–G checks and
+POSIX SIGTERM recovery passed, rows were exactly 2,000,000, replay added zero
+rows and no errors were reported. Latest latency recovered closer to the
+timestamp-only baseline, supporting removal without proving causation; both
+latency budgets remain unmet. Rollback checks passed all 161 tests, typecheck,
+lint and build. See
+[the hashing plan](docs/canonical-point-hashing-plan.md).
+
 ### Optional one-off API CPU profile
 
 ```bash
