@@ -110,6 +110,17 @@ export async function runLoad(
       writers: manifest.writers,
     },
     ...evidence,
+    ...(server.cpuProfilePath
+      ? {
+          diagnosticOnly: true,
+          cpuProfile: {
+            path: server.cpuProfilePath,
+            scope:
+              'API process from startup through reconciliation; not load generator',
+            savedAfterReport: true,
+          },
+        }
+      : {}),
     initialRows,
     finalRows,
     finalDatabaseRows: databaseRows.rows[0]?.count,

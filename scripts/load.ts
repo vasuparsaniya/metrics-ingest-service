@@ -8,10 +8,10 @@ import { requireEmptyMeasurements, runLoad } from './load/runner';
 
 /** Runs the PDF load or replays the original persisted manifest without external services. */
 export async function main(): Promise<void> {
-  const settings = options();
+  const settings = options(process.argv.slice(2), true);
   if (settings.help) {
     console.log(
-      'npm run load -- [--points 2000000] [--database name] [--manifest path] [--report-dir artifacts]\nDefault: DATABASE_URL, 5000-point batches, 8 writers. Never deletes existing data.',
+      'npm run load -- [--points 2000000] [--database name] [--manifest path] [--report-dir artifacts] [--profile-api]\nDefault: DATABASE_URL, 5000-point batches, 8 writers. Profiling is diagnostic only. Never deletes existing data.',
     );
     return;
   }
@@ -21,11 +21,15 @@ export async function main(): Promise<void> {
     settings.database !== undefined,
   );
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
+  const cpuProfilePath = settings.profileApi
+    ? resolve(settings.reportDir, `api-${randomUUID()}.cpuprofile`)
+    : undefined;
   try {
     if (!settings.manifest) await requireEmptyMeasurements(pool);
     server = await startServer(
       databaseUrl,
       resolve(settings.reportDir, `api-${randomUUID()}.log`),
+      cpuProfilePath,
     );
     const prepared = settings.manifest
       ? {
@@ -39,12 +43,24 @@ export async function main(): Promise<void> {
         database: new URL(databaseUrl).pathname.slice(1),
         points: prepared.manifest.total,
         manifestPath: prepared.path,
+        ...(cpuProfilePath ? { cpuProfilePath, diagnosticOnly: true } : {}),
       }),
     );
     await runLoad(pool, server, prepared.manifest, prepared.path);
   } finally {
-    await server?.stop();
-    await pool.end();
+    try {
+      await server?.stop();
+      if (cpuProfilePath && server)
+        console.log(
+          JSON.stringify({
+            event: 'cpu_profile_saved',
+            path: cpuProfilePath,
+            diagnosticOnly: true,
+          }),
+        );
+    } finally {
+      await pool.end();
+    }
   }
 }
 

@@ -5,6 +5,7 @@ import { groupPoints, isRecord } from './ingest.validation';
 import { validatePointsCooperatively } from './ingest.processing';
 import { IngestResponse, PointGroup } from './ingest.types';
 import { insertSummarySql } from './ingest.insert.sql';
+import { measurementParameters } from './ingest.parameters';
 
 function savedResponse(value: unknown): IngestResponse {
   if (
@@ -105,13 +106,11 @@ export class IngestRepository {
     response: IngestResponse,
   ): Promise<void> {
     if (groups.length === 0) return;
-    const ids = groups.map((group) => group.point.seriesId);
-    const times = groups.map((group) => group.point.ts);
-    const values = groups.map((group) => group.point.value);
+    const parameters = await measurementParameters(groups);
     const inserted = await client.query<{
       insertedCount: number;
       identities: string[];
-    }>(insertSummarySql, [ids, times, values]);
+    }>(insertSummarySql, parameters);
     const summary = inserted.rows[0];
     if (!summary) throw new Error('Measurement insert summary is missing');
     // DO NOTHING skips every existing identity, including concurrent conflicts.
@@ -133,7 +132,7 @@ export class IngestRepository {
       FROM unnest($1::bigint[], $2::timestamptz[], $3::numeric[]) WITH ORDINALITY AS input(series_id, ts, value, ordinal)
       JOIN measurements m ON m.series_id = input.series_id AND m.ts = input.ts
       ORDER BY input.ordinal`,
-      [ids, times, values],
+      parameters,
     );
     if (stored.rows.length !== groups.length)
       throw new Error('An inserted or conflicting point is missing');

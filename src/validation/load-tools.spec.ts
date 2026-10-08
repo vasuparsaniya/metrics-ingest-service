@@ -29,6 +29,13 @@ const manifest: LoadManifest = {
 };
 
 describe('deterministic load tooling', () => {
+  it('profiles only when the load script explicitly allows the opt-in flag', () => {
+    expect(options([]).profileApi).toBe(false);
+    expect(
+      options(['--profile-api', '--points', '40000'], true).profileApi,
+    ).toBe(true);
+    expect(() => options(['--profile-api'])).toThrow('supported only');
+  });
   it('renders signed exact cents', () => {
     expect(centsText(-1n)).toBe('-0.01');
     expect(centsText(0n)).toBe('0.00');

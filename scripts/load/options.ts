@@ -6,18 +6,29 @@ export interface Options {
   reportDir: string;
   samples: number;
   help: boolean;
+  profileApi: boolean;
 }
 
 /** Rejects misspelled options so a small verification cannot accidentally become a full load. */
-export function options(args = process.argv.slice(2)): Options {
+export function options(
+  args = process.argv.slice(2),
+  allowProfile = false,
+): Options {
   const result: Options = {
     points: 2000000,
     reportDir: 'artifacts',
     samples: 100,
     help: false,
+    profileApi: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
+    if (argument === '--profile-api') {
+      if (!allowProfile)
+        throw new Error('--profile-api is supported only by npm run load');
+      result.profileApi = true;
+      continue;
+    }
     if (argument === '--help') {
       result.help = true;
       continue;

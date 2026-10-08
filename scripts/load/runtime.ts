@@ -10,6 +10,7 @@ import { Pool } from 'pg';
 import { applyMigrations } from '../migrate';
 import { ApiClient } from './http';
 import { postgresSessionOptions } from '../../src/database/session-options';
+import { saveCpuProfile } from './cpu-profile';
 
 /** Uses the configured database unless an explicit name override is supplied. */
 export function benchmarkUrl(
@@ -75,6 +76,7 @@ export interface ManagedServer {
   api: ApiClient;
   exited: Promise<void>;
   forcedKill: boolean;
+  cpuProfilePath?: string;
   stop(): Promise<void>;
 }
 
@@ -82,6 +84,7 @@ export interface ManagedServer {
 export async function startServer(
   databaseUrl: string,
   logPath: string,
+  cpuProfilePath?: string,
 ): Promise<ManagedServer> {
   await access(resolve('dist/main.js'));
   const socket = createServer();
@@ -105,6 +108,9 @@ export async function startServer(
     [
       '--require',
       resolve('dist/benchmark/rss-preload.js'),
+      ...(cpuProfilePath
+        ? ['--require', resolve('dist/benchmark/cpu-profile-preload.js')]
+        : []),
       resolve('dist/main.js'),
     ],
     {
@@ -113,6 +119,9 @@ export async function startServer(
         DATABASE_URL: databaseUrl,
         PORT: String(address.port),
         API_TOKEN: token,
+        ...(cpuProfilePath
+          ? { METRICS_BENCHMARK_CPU_PROFILE_PATH: cpuProfilePath }
+          : {}),
       },
       stdio: ['ignore', log, log, 'ipc'],
     },
@@ -122,13 +131,29 @@ export async function startServer(
     child.once('exit', () => done());
     child.once('error', fail);
   });
+  let profileSaved = false;
   const server: ManagedServer = {
     child,
     api: new ApiClient(`http://127.0.0.1:${address.port}`, token),
     exited,
     forcedKill: false,
+    cpuProfilePath,
     async stop() {
-      if (child.exitCode !== null || child.signalCode !== null) return;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        if (cpuProfilePath && !profileSaved)
+          throw new Error('API exited before CPU profile was saved');
+        return;
+      }
+      let profileError: Error | undefined;
+      if (cpuProfilePath) {
+        try {
+          await saveCpuProfile(child, cpuProfilePath);
+          profileSaved = true;
+        } catch (error: unknown) {
+          profileError =
+            error instanceof Error ? error : new Error(String(error));
+        }
+      }
       child.kill('SIGTERM');
       const timeout = setTimeout(() => {
         server.forcedKill = true;
@@ -139,6 +164,7 @@ export async function startServer(
       } finally {
         clearTimeout(timeout);
       }
+      if (profileError) throw profileError;
     },
   };
   for (let attempt = 0; attempt < 100; attempt += 1) {

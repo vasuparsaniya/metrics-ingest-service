@@ -12,6 +12,7 @@ import { DatabaseService } from '../src/database/database.service';
 import { isRecord } from '../src/ingest/ingest.validation';
 import { configureHttp } from '../src/http/configure-http';
 import { insertSummarySql } from '../src/ingest/ingest.insert.sql';
+import { measurementParameters } from '../src/ingest/ingest.parameters';
 
 describe('metrics APIs against real PostgreSQL', () => {
   let app: INestApplication;
@@ -154,6 +155,67 @@ describe('metrics APIs against real PostgreSQL', () => {
       [id],
     );
     expect(count.rows[0]?.count).toBe('0');
+  });
+
+  it('decodes cooperative array parameters without precision loss or lost escaping', async () => {
+    const values = ['NULL', '', 'a,b', '{x}', '"quoted"', 'back\\slash', 'é😀'];
+    const times = [
+      '2026-10-07 00:00:00.123456+00',
+      '294276-12-31 23:59:59.999998+00',
+      '0001-01-01 00:00:00.000001+00 BC',
+    ];
+    const parameters = await measurementParameters(
+      values.map((value, index) => ({
+        point: {
+          index,
+          seriesId: '9223372036854775807',
+          ts: times[index % times.length] ?? '',
+          micros: BigInt(index),
+          value,
+        },
+        indexes: [index],
+      })),
+    );
+    const decoded = await database.pool.query<{
+      ids: string[];
+      times: string[];
+      values: string[];
+    }>(
+      'SELECT $1::text[] AS ids, $2::text[] AS times, $3::text[] AS values',
+      parameters,
+    );
+    expect(decoded.rows[0]?.values).toEqual(values);
+    expect(decoded.rows[0]?.ids).toEqual(
+      Array<string>(values.length).fill('9223372036854775807'),
+    );
+    expect(decoded.rows[0]?.times).toEqual(
+      values.map((_, index) => times[index % times.length]),
+    );
+    const numericParameters = await measurementParameters([
+      {
+        point: {
+          index: 0,
+          seriesId: '9223372036854775807',
+          ts: times[1] ?? '',
+          micros: 0n,
+          value: '-9007199254740993.123456789',
+        },
+        indexes: [0],
+      },
+    ]);
+    const exact = await database.pool.query<{
+      id: string;
+      ts: string;
+      value: string;
+    }>(
+      'SELECT id::text, ts::text, value::text FROM unnest($1::bigint[], $2::timestamptz[], $3::numeric[]) AS input(id, ts, value)',
+      numericParameters,
+    );
+    expect(exact.rows[0]).toEqual({
+      id: '9223372036854775807',
+      ts: '294276-12-31 23:59:59.999998+00',
+      value: '-9007199254740993.123456789',
+    });
   });
 
   it('replays the original response, rejects key mismatch, and deduplicates across different keys', async () => {

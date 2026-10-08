@@ -272,6 +272,62 @@ remain unmet. Full details are preserved in the
 [processing plan](docs/ingest-processing-plan.md), independently of ignored
 artifacts. Typecheck, lint, build, formatting and 108 tests passed before the run.
 
+### Cooperative measurement parameter experiment
+
+The measured ingest optimization prepares measurement array parameters
+cooperatively in 100-point chunks and reuses the encoded text for insertion and
+mixed-batch classification. Strings remain bound parameters with the same SQL
+casts, escaping and exact values—not interpolated SQL. This moves pg's large-array
+encoding out of a single uninterrupted driver call; final joining and driver byte
+encoding can still block. See [the parameter plan](docs/cooperative-parameters-plan.md).
+Unprofiled acceptance run `46e89655-f881-44ac-a331-83868e0fccd1`, measured at
+`2026-10-08T01:22:01.911Z` (UTC), used database
+`metrics_benchmark_cooperative_params_01`.
+
+| Measurement                         | 100-point baseline (`9b3a08d2…`) | Cooperative parameters (`46e89655…`) | Target        |
+| ----------------------------------- | -------------------------------: | -----------------------------------: | ------------- |
+| Fresh throughput (points/sec)       |                        45,419.21 |                            46,781.87 | ≥20,000: pass |
+| Latest p95 during writes (ms)       |                            97.42 |                                85.62 | ≤50: fail     |
+| 30-day hourly bucket p95, idle (ms) |                           183.45 |                               151.96 | ≤150: fail    |
+| Write duration (seconds)            |                            44.03 |                                42.75 | Informational |
+| API sampled peak RSS (MiB)          |                           242.87 |                               247.03 | <512: pass    |
+
+Both runs used 2,000,000 points, 5,000-point requests, eight writers, pool size 12
+and JIT off on the same recorded CPU/OS/Node/PostgreSQL configuration. Observed
+throughput increased 3.0% and latest p95 decreased 12.1%; repeat runs are needed
+to confirm consistency. Bucket SQL was unchanged, so its improvement is not
+direct evidence of a query optimization; cache and run-to-run variation can
+contribute. The bucket target still missed by 1.96 ms, and latest still exceeds
+50 ms. Execution success is not full performance compliance.
+
+All A–G correctness checks passed, including POSIX SIGTERM recovery. Stored rows
+were exactly 2,000,000; replay inserted zero new rows, with processed input
+175,728.64 points/sec (not fresh insertion throughput). No acceptance/load errors
+were reported. Idle latest p95 was 3.60 ms and bucket p95 during writes was
+429.97 ms; latest/bucket degradation was 2280.38%/182.95%. Typecheck, lint, build
+and 119 tests passed before this run. These embedded measurements remain readable
+without the ignored artifacts.
+
+### Optional one-off API CPU profile
+
+```bash
+npm run load -- --points 2000000 --database metrics_benchmark_cpu_profile_01 --profile-api
+```
+
+This starts the API automatically and profiles only the benchmark-owned API,
+not the load generator. The final `cpu_profile_saved` message prints a unique
+`artifacts/api-<uuid>.cpuprofile` path. The script saves the profile before normal
+API shutdown; a failed save reports an error. Open the file in a CPU-profile viewer
+or share its filename for analysis. Local inspector profiling exposes no debug port
+and adds no dependency. The profile includes startup, writes, reads and final
+reconciliation; focus analysis on the write interval rather than startup costs.
+
+Profiling adds overhead. Its load JSON is labelled `diagnosticOnly: true`; do not
+use its timings as final acceptance/compliance results. Ordinary load/acceptance
+runs do not enable profiling. The flag is supported only by `npm run load`, not
+acceptance/compare/benchmark. Files can contain local source paths and function
+names; keep profiles in ignored artifacts. See [the plan](docs/api-cpu-profile-plan.md).
+
 ### Readable run summary
 
 Each acceptance run generates `REPORT.md` beside `acceptance.json`. Start with that Markdown file: it lists workload/machine identity, performance targets and actual measurements, A–G correctness results, pending independent checks, and links to JSON evidence. The terminal prints `markdownPath`, including for failed runs that reach report generation. Correctness success is separate from performance compliance; small/replay runs do not certify fresh two-million-point targets. New reports record the database name without credentials. Older JSON may show `Database: Not recorded`.
