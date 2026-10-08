@@ -23,6 +23,9 @@
     "benchmark": "npm run build && ts-node scripts/benchmark.ts",
     "acceptance": "npm run build && ts-node scripts/acceptance.ts",
     "compare": "ts-node scripts/compare.ts",
+    "index:cost": "ts-node scripts/primary-index-cost.ts",
+    "index:cost:remaining": "ts-node scripts/remaining-index-cost.ts",
+    "index:plans": "ts-node scripts/index-lookup.ts",
     "report": "ts-node scripts/report.ts",
     "load:setup": "npm ci && ts-node scripts/setup-load.ts",
     "check": "npm run typecheck && npm run lint && npm run test && npm run test:e2e && npm run build"

@@ -14,9 +14,40 @@ A backend service for ingesting timestamped measurements in batches and querying
 
 ## Project status
 
-All required API routes and business-schema migrations are implemented. Full two-million-point acceptance runs, SQL strategy/index experiments, and query optimization measurements are recorded below. The latest run completed A–G correctness/recovery checks and passed throughput, row-count and memory targets, but failed both latency targets. This is not a claim of full assignment compliance.
+All required API routes and business-schema migrations are implemented. Full two-million-point acceptance runs, SQL strategy/index experiments, and query optimization measurements are recorded below. The latest representative run for the retained implementation completed A–G correctness/recovery checks and passed throughput, row-count and memory targets, but failed both latency targets. This is not a claim of full assignment compliance.
 
 Work is on `feat/ingest`; the submission must include an open pull request into `main`.
+
+## Current target achievement
+
+**3 of 5 measured targets achieved.** These values describe the retained
+implementation, not the best result selected from experimental runs.
+
+| Checkpoint                     | Assignment target  |             Achieved | Result |
+| ------------------------------ | ------------------ | -------------------: | ------ |
+| Stored rows                    | Exactly 2,000,000  |            2,000,000 | Pass   |
+| Fresh insertion throughput     | ≥20,000 points/sec | 50,570.24 points/sec | Pass   |
+| Latest p95 during fresh writes | ≤50 ms             |             78.92 ms | Fail   |
+| 30-day hourly bucket p95, idle | ≤150 ms            |            166.48 ms | Fail   |
+| API sampled peak RSS           | <512 MB            |           239.03 MiB | Pass   |
+
+Source: full-scale unprofiled acceptance run
+`25b93ce8-9e25-4d77-9cef-88bc0c989cf2`, UTC `2026-10-08T02:53:20.681Z`, database
+`metrics_benchmark_without_hash_fast_path_01`. Workload: 2,000,000 points,
+5,000-point requests, eight writers, pool 12, JIT off. This cold run preceded
+adding the experimental covering index to that database. Timestamp and parameter
+encoding optimizations were enabled; hashing fast path and cooperative grouping
+are not retained. All A–G correctness/recovery checks passed, replay added zero
+rows and no errors were reported. The report uses a 512 MiB memory threshold;
+observed RSS also meets the assignment's stricter 512 MB threshold.
+
+Update this table and its source run together after a new full-scale, unprofiled
+acceptance measurement of adopted changes. Preserve previous results in the
+measurement history below. Do not replace values with replay throughput,
+profiling results, post-maintenance timings or unadopted experiments. This table
+is maintained in README; generating an artifact report does not update it
+automatically. Full assignment compliance includes evidence beyond these five
+targets and is not established by correctness success alone.
 
 ## Local setup
 
@@ -378,6 +409,54 @@ latency budgets remain unmet. Rollback checks passed all 161 tests, typecheck,
 lint and build. See
 [the hashing plan](docs/canonical-point-hashing-plan.md).
 
+### Cooperative point grouping experiment
+
+Cooperative grouping was tested twice, then removed at the user's request.
+The original synchronous Map scan and deterministic candidate sort are restored.
+Existing cooperative hashing, validation and parameter encoding remain unchanged;
+timestamp optimization is retained. SQL and transaction boundaries never changed.
+
+| Measurement                         | Baseline (`25b93ce8…`) | Grouping run 1 (`dd4b3eec…`) | Grouping run 2 (`849c4612…`) |
+| ----------------------------------- | ---------------------: | ---------------------------: | ---------------------------: |
+| Fresh throughput (points/sec)       |              50,570.24 |                    47,953.19 |                    48,136.41 |
+| Latest p95 during writes (ms)       |                  78.92 |                        80.64 |                        78.81 |
+| 30-day hourly bucket p95, idle (ms) |                 166.48 |                       157.54 |                       201.76 |
+| Write duration (seconds)            |                  39.55 |                        41.71 |                        41.55 |
+| API sampled peak RSS (MiB)          |                 239.03 |                       249.07 |                       240.29 |
+
+Both experiments used 2,000,000 points, 5,000-point requests, eight writers,
+pool 12 and JIT off on the same recorded machine/software configuration. All A–G
+checks and POSIX SIGTERM recovery passed, stored rows were exactly 2,000,000,
+replay added zero rows and no acceptance/load errors were reported. Throughput
+decreased approximately 5% without a meaningful latest-latency benefit. Both
+latency targets failed. Idle bucket variability despite unchanged SQL prevents
+attributing its changes directly to grouping. These sequential runs support
+removal but do not isolate all machine/cache effects.
+See [the grouping plan](docs/cooperative-grouping-plan.md).
+
+### Current covering-index experiment — not adopted
+
+An additional `(series_id, ts) INCLUDE (value)` index was created manually only in
+isolated benchmark databases. No permanent migration or main-database change was
+made. Fresh loads measured 41,455.34 and 46,296.87 points/sec versus the no-index
+baseline of 50,570.24 (approximately 8–18% lower). Idle bucket p95 was 144.68 and
+165.58 ms, so the ≤150 ms target did not pass consistently. Latest write p95 was
+94.68 and 83.51 ms; both failed ≤50 ms. All A–G execution/correctness checks
+passed, rows were exact, replay added zero rows and no errors were reported.
+
+The second indexed database still required approximately 49,000 heap fetches per
+checked aggregate scan. Manual VACUUM ANALYZE there eliminated those fetches;
+the subsequent idle HTTP benchmark measured bucket p95 **150.101231 ms**, still
+technically above target, and latest p95 4.85 ms. This is post-maintenance
+evidence, not a replacement for the original fresh-load results. Fresh-maintained
+covering indexes occupied about 130.24/130.33 MiB; the index built after an
+existing load occupied 77.375 MiB. These sizes exclude other storage and WAL.
+
+Decision: keep the index experimental. Existing test indexes remain for
+inspection, but production retains its current schema. See
+[covering-index results and caveats](docs/covering-index-experiment.md) for full
+measurements, run identities, visibility-map evidence and next investigation.
+
 ### Optional one-off API CPU profile
 
 ```bash
@@ -464,6 +543,51 @@ ORDER BY s.id;
 
 ### Index rationale and remaining measured evidence
 
+Measurements primary-key write cost can be reproduced separately on isolated
+tables in an already loaded local benchmark database:
+
+```bash
+npm run index:cost -- --manifest "artifacts/acceptance-d01edefe-2d5a-4ec2-ad86-4ff865f8b64d/1106e95e-fc3c-4830-983d-10db4d1d9ff7/manifest.json" --database metrics_benchmark_covering_fresh_02
+```
+
+Substitute your own manifest and its database; the eight series must exist there.
+An explicit non-main local database is required. Add `--points 40000` for a smoke
+test only. Two fresh experiment tables are created with the same checks and
+foreign key. The primary key is physically dropped from one; identical plain
+ordered UNNEST INSERTs load unique points into both, with 5,000-point batches and
+eight writers. JSON and `REPORT.md` record exact reconciliation, actual schemas,
+throughput and sizes. Tables are retained; no business-table rows or indexes are
+modified. Allow storage for two additional dataset copies.
+
+This is direct database write-kernel evidence, not HTTP acceptance or safe
+production deduplication. Generation/pg overhead is included; DDL and
+reconciliation are outside the write timer. PK-first sequential ordering and
+cache/checkpoint/machine variation limit causal attribution. It does not measure
+series or request-key index costs. See
+[the primary-key cost plan](docs/primary-index-cost-plan.md).
+
+Measured on 2026-10-08 at 04:11 UTC in `metrics_benchmark_covering_fresh_02`
+(Intel i3-7020U, four logical CPUs, Node 20.18.0, PostgreSQL 17.11 in Docker,
+JIT off, direct SQL pool of eight):
+
+| Direct write-kernel check      | Primary key retained | Primary key physically removed |
+| ------------------------------ | -------------------: | -----------------------------: |
+| Inserted rows                  |            2,000,000 |                      2,000,000 |
+| Throughput (points/sec)        |           104,011.64 |                     114,589.40 |
+| Write duration                 |              19.23 s |                        17.45 s |
+| Index bytes                    |           65,011,712 |                              0 |
+| Per-series count and exact sum |    All eight matched |              All eight matched |
+
+The primary-key variant had **9.23% lower throughput** in this single sequential
+trial. This is measured overhead, not a recommendation to remove the required
+identity index. Both variants retained their foreign key and checks. Experiment
+tables are `bench_pkcost_25866a0dbfc94d60_pk` and
+`bench_pkcost_25866a0dbfc94d60_heap`; evidence is in
+`artifacts/primary-index-cost-bd69feb3-1490-438b-aaeb-ef7638b782fa/REPORT.md`
+and its `report.json`. These direct SQL rates do not replace the HTTP target
+achievement table above. Artifacts remain local; this embedded summary travels
+with the repository.
+
 | Index                                    | Purpose and write cost                                                                                          |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `series_pkey (id)`                       | Series identity, lookup, and referenced-key integrity. Updated on series creation, not each measurement insert. |
@@ -471,9 +595,266 @@ ORDER BY s.id;
 | `ingest_requests_pkey (idempotency_key)` | Atomic key claim and replay lookup. Maintained once per new batch request.                                      |
 | `schema_migrations_pkey (name)`          | Migration bookkeeping only; not part of normal ingest traffic.                                                  |
 
+#### Series and request-key synthetic write costs
+
+```bash
+npm run index:cost:remaining -- --database metrics_benchmark_covering_fresh_02
+```
+
+Use your existing local non-main database. No manifest or running API is needed.
+Default: 100,000 synthetic rows per variant, 5,000 rows/batch, eight workers.
+For a smoke check add `--points 10000`. Four fresh isolated tables are created;
+their checks, NOT NULL rules and series identity generation are preserved. Each
+pair differs only in its physically retained/dropped primary key. Plain INSERTs
+are identical within a pair; there is no conflict handling or API hashing.
+Verification checks exact counts, distinct key/identity coverage and request
+payloads. Actual catalog constraints/indexes, sizes, machine and timings appear
+in unique JSON and `REPORT.md` files. Tables are retained, never overwritten.
+
+Measured 2026-10-08 at 04:30–04:31 UTC on the same i3/Node/PostgreSQL machine
+above, JIT off and direct SQL pool=8:
+
+| Synthetic comparison    | Rows per variant | With PK rows/sec | Without PK rows/sec | With/without PK duration |  PK bytes |
+| ----------------------- | ---------------: | ---------------: | ------------------: | ------------------------ | --------: |
+| Series, initial trial   |          100,000 |       161,888.38 |          344,724.32 | 0.62 / 0.29 s            | 2,244,608 |
+| Requests, initial trial |          100,000 |        64,612.15 |           96,008.40 | 1.55 / 1.04 s            | 5,201,920 |
+| Series, repeat          |          100,000 |       155,567.08 |          403,792.87 | 0.64 / 0.25 s            | 2,244,608 |
+| Requests, repeat        |          100,000 |        66,142.81 |           89,786.83 | 1.51 / 1.11 s            | 5,242,880 |
+
+All four variants in both trials passed exact data reconciliation. No-PK index
+bytes were zero. Reports:
+`artifacts/remaining-index-cost-55af70f7-b15e-4c80-9cde-1cfdc2e3138f/REPORT.md`
+and `artifacts/remaining-index-cost-44362656-7950-4037-93ce-7eee717b1ea3/REPORT.md`.
+The repeat followed a null-safe request-payload verification tightening; insertion
+SQL and workload were unchanged. Consult each JSON for exact retained table names.
+
+These are **experimental direct-insert rates**, not measurement points/sec or
+end-to-end ingest throughput. The actual acceptance dataset uses eight series
+and 400 batch request records, not 100,000 of each. Request keys are deterministic
+ordered strings with a fixed valid hash/response; real key distributions and
+request claim/update/replay behavior can cost differently. Particularly short
+series trials, indexed-first order, cache/checkpoint variation and driver work
+prevent precise attribution of percentages. Keep both production keys: identity
+and atomic idempotency require them. Do not use these results to change the HTTP
+target achievement table. See [design](docs/remaining-index-cost-design.md).
+
 The comparison report includes real lookup plans, bucket plans, relation/index sizes, insert timings with/without the optional covering index, and twenty measured query samples per indexed configuration. It also disables index/bitmap/index-only scans locally in a rolled-back read transaction to show a no-index-access plan without dropping correctness constraints. That diagnostic has a 30-second timeout; a timeout is recorded as a measured failure, not fabricated EXPLAIN output.
 
 Strategy comparisons are **insert-kernel microbenchmarks** with identical point constraints, batch scope, eight writers, and ordered identities. They exclude HTTP validation, payload hashing, request records, and post-insert classification; their throughput is not the API's end-to-end throughput. The production load report supplies that measurement. Experiments run sequentially, so cache/order noise requires repeated runs before choosing an optimization.
+
+#### Required-index lookup plans: physically indexed versus unindexed copies
+
+Reproduce after generating the primary and remaining index-cost reports above.
+Use the JSON paths printed by your own runs; historical artifacts are ignored and
+are not needed once you generate replacements. This command does not load data,
+start an API, or alter production indexes:
+
+```bash
+npm run index:plans -- --database metrics_benchmark_covering_fresh_02 --manifest artifacts/primary-index-cost-bd69feb3-1490-438b-aaeb-ef7638b782fa/report.json --keys-report artifacts/remaining-index-cost-44362656-7950-4037-93ce-7eee717b1ea3/report.json
+```
+
+Measured 2026-10-08T04:42:50.698Z on the same machine above, JIT off, direct SQL pool=1.
+The script verifies exact table counts and physical index counts (one versus
+zero), applies ANALYZE only to experiment tables, warms each query, then collects
+20 samples per variant with alternating order. All queried results matched
+exactly. Measurements have two million rows, including 250,000 in the queried
+series; the series/request tables have 100,000 synthetic rows each.
+
+| Idle direct SQL query  | Table rows | With PK p95 ms | Without PK p95 ms |
+| ---------------------- | ---------: | -------------: | ----------------: |
+| Latest measurement     |  2,000,000 |          1.522 |           204.859 |
+| 30-day range aggregate |  2,000,000 |         79.097 |           190.376 |
+| Series ID lookup       |    100,000 |          0.875 |            11.130 |
+| Request replay lookup  |    100,000 |          0.897 |            20.225 |
+
+Latest uses a backward index scan instead of a parallel scan and top-N sort.
+The range aggregate uses a bitmap index/heap scan instead of scanning the full
+heap. Series/request lookups use index-only/index scans instead of filtering
+99,999 unrelated rows. These results justify retaining the three required
+business primary keys despite the write overhead measured above. They do not
+establish the cause of the remaining HTTP latency misses, and do not replace
+30-day hourly bucket or latest-during-writes acceptance measurements.
+
+The range comparison is one count/sum/min/max query over a month, **not** the
+720-bucket endpoint. Raw before/after bucket evidence is retained elsewhere in
+this README. The projected series ID matches even though concurrent identity
+allocation can assign different names to the same ID in the two synthetic runs.
+Request replay compares the actual stored hash and JSON response. Statistics,
+cache state, synthetic key sizes, short repeated trials and host variation limit
+generalization. No forced planner flags or production index removal were used.
+
+Generated evidence: `artifacts/index-lookups-1195d31c-cd43-4e92-8231-1bffd6ee2722/REPORT.md`
+and its `report.json`. All eight original EXPLAIN outputs follow so the evidence
+is available in a clean clone without committing artifacts. SQL uses the bound
+parameters shown for each pair; text plan execution time is one server sample,
+not the repeated driver-visible p95 above.
+
+##### Latest measurement
+
+Parameters: `["1"]`. Matching results verified on both tables.
+
+With primary key: **yes**. Direct SQL p50/p95: 0.861 / 1.522 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT m.ts::text,m.value::text FROM "bench_pkcost_25866a0dbfc94d60_pk" AS m WHERE m.series_id=$1::bigint ORDER BY m.ts DESC LIMIT 1;
+```
+
+```text
+Limit  (cost=0.43..0.68 rows=1 width=72) (actual time=0.028..0.028 rows=1 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan Backward using bench_pkcost_25866a0dbfc94d60_pk_pkey on bench_pkcost_25866a0dbfc94d60_pk m  (cost=0.43..61195.87 rows=245800 width=72) (actual time=0.027..0.027 rows=1 loops=1)
+        Index Cond: (series_id = '1'::bigint)
+        Buffers: shared hit=4
+Planning Time: 0.086 ms
+Execution Time: 0.047 ms
+```
+
+With primary key: **no**. Direct SQL p50/p95: 169.305 / 204.859 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT m.ts::text,m.value::text FROM "bench_pkcost_25866a0dbfc94d60_heap" AS m WHERE m.series_id=$1::bigint ORDER BY m.ts DESC LIMIT 1;
+```
+
+```text
+Limit  (cost=25705.52..25705.63 rows=1 width=72) (actual time=200.556..204.530 rows=1 loops=1)
+  Buffers: shared hit=2794 read=10023
+  ->  Gather Merge  (cost=25705.52..49753.36 rows=206110 width=72) (actual time=200.553..204.526 rows=1 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=2794 read=10023
+        ->  Sort  (cost=24705.49..24963.13 rows=103055 width=72) (actual time=195.328..195.329 rows=1 loops=3)
+              Sort Key: ts DESC
+              Sort Method: top-N heapsort  Memory: 25kB
+              Buffers: shared hit=2794 read=10023
+              Worker 0:  Sort Method: top-N heapsort  Memory: 25kB
+              Worker 1:  Sort Method: top-N heapsort  Memory: 25kB
+              ->  Parallel Seq Scan on bench_pkcost_25866a0dbfc94d60_heap m  (cost=0.00..24190.22 rows=103055 width=72) (actual time=0.749..162.919 rows=83333 loops=3)
+                    Filter: (series_id = '1'::bigint)
+                    Rows Removed by Filter: 583333
+                    Buffers: shared hit=2720 read=10023
+Planning Time: 0.121 ms
+Execution Time: 204.570 ms
+```
+
+##### 30-day range aggregate
+
+Parameters: `["1","2026-09-01T00:00:00Z","2026-10-01T00:00:00Z"]`. Matching results verified on both tables.
+
+With primary key: **yes**. Direct SQL p50/p95: 69.031 / 79.097 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT count(*)::text,sum(value)::text,min(value)::text,max(value)::text FROM "bench_pkcost_25866a0dbfc94d60_pk" WHERE series_id=$1::bigint AND ts >= $2::timestamptz AND ts < $3::timestamptz;
+```
+
+```text
+Finalize Aggregate  (cost=23596.89..23596.92 rows=1 width=128) (actual time=90.123..93.855 rows=1 loops=1)
+  Buffers: shared hit=2968
+  ->  Gather  (cost=23596.65..23596.86 rows=2 width=104) (actual time=89.960..93.829 rows=3 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=2968
+        ->  Partial Aggregate  (cost=22596.65..22596.66 rows=1 width=104) (actual time=85.347..85.349 rows=1 loops=3)
+              Buffers: shared hit=2968
+              ->  Parallel Bitmap Heap Scan on bench_pkcost_25866a0dbfc94d60_pk  (cost=7037.75..21572.69 rows=102396 width=6) (actual time=21.060..43.010 rows=83333 loops=3)
+                    Recheck Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                    Heap Blocks: exact=618
+                    Buffers: shared hit=2968
+                    ->  Bitmap Index Scan on bench_pkcost_25866a0dbfc94d60_pk_pkey  (cost=0.00..6976.32 rows=245751 width=0) (actual time=24.528..24.528 rows=250000 loops=1)
+                          Index Cond: ((series_id = '1'::bigint) AND (ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone))
+                          Buffers: shared hit=969
+Planning Time: 0.103 ms
+Execution Time: 93.899 ms
+```
+
+With primary key: **no**. Direct SQL p50/p95: 149.576 / 190.376 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT count(*)::text,sum(value)::text,min(value)::text,max(value)::text FROM "bench_pkcost_25866a0dbfc94d60_heap" WHERE series_id=$1::bigint AND ts >= $2::timestamptz AND ts < $3::timestamptz;
+```
+
+```text
+Finalize Aggregate  (cost=29356.92..29356.95 rows=1 width=128) (actual time=146.942..151.587 rows=1 loops=1)
+  Buffers: shared hit=4832 read=7911
+  ->  Gather  (cost=29356.69..29356.90 rows=2 width=104) (actual time=146.837..151.569 rows=3 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=4832 read=7911
+        ->  Partial Aggregate  (cost=28356.69..28356.70 rows=1 width=104) (actual time=142.898..142.899 rows=1 loops=3)
+              Buffers: shared hit=4832 read=7911
+              ->  Parallel Seq Scan on bench_pkcost_25866a0dbfc94d60_heap  (cost=0.00..27326.33 rows=103035 width=6) (actual time=0.086..109.844 rows=83333 loops=3)
+                    Filter: ((ts >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (ts < '2026-10-01 00:00:00+00'::timestamp with time zone) AND (series_id = '1'::bigint))
+                    Rows Removed by Filter: 583333
+                    Buffers: shared hit=4832 read=7911
+Planning Time: 0.080 ms
+Execution Time: 151.625 ms
+```
+
+##### Series ID lookup
+
+Parameters: `["50000"]`. Matching results verified on both tables.
+
+With primary key: **yes**. Direct SQL p50/p95: 0.713 / 0.875 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT id::text FROM "bench_keycost_9146fce308bc4b94_series_pk" WHERE id=$1::bigint;
+```
+
+```text
+Index Only Scan using bench_keycost_9146fce308bc4b94_series_pk_pkey on bench_keycost_9146fce308bc4b94_series_pk  (cost=0.29..4.32 rows=1 width=32) (actual time=0.011..0.012 rows=1 loops=1)
+  Index Cond: (id = '50000'::bigint)
+  Heap Fetches: 0
+  Buffers: shared hit=3
+Planning Time: 0.044 ms
+Execution Time: 0.023 ms
+```
+
+With primary key: **no**. Direct SQL p50/p95: 7.833 / 11.130 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT id::text FROM "bench_keycost_9146fce308bc4b94_series_heap" WHERE id=$1::bigint;
+```
+
+```text
+Seq Scan on bench_keycost_9146fce308bc4b94_series_heap  (cost=0.00..1891.01 rows=1 width=32) (actual time=3.784..7.404 rows=1 loops=1)
+  Filter: (id = '50000'::bigint)
+  Rows Removed by Filter: 99999
+  Buffers: shared hit=641
+Planning Time: 0.034 ms
+Execution Time: 7.418 ms
+```
+
+##### Request replay lookup
+
+Parameters: `["cost:0000050000"]`. Matching results verified on both tables.
+
+With primary key: **yes**. Direct SQL p50/p95: 0.740 / 0.897 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT encode(payload_hash,'hex') AS payload_hash,response_body FROM "bench_keycost_9146fce308bc4b94_requests_pk" WHERE idempotency_key=$1;
+```
+
+```text
+Index Scan using bench_keycost_9146fce308bc4b94_requests_pk_pkey on bench_keycost_9146fce308bc4b94_requests_pk  (cost=0.42..8.44 rows=1 width=107) (actual time=0.020..0.021 rows=1 loops=1)
+  Index Cond: ((idempotency_key)::text = 'cost:0000050000'::text)
+  Buffers: shared hit=4
+Planning Time: 0.043 ms
+Execution Time: 0.031 ms
+```
+
+With primary key: **no**. Direct SQL p50/p95: 13.428 / 20.225 ms.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT encode(payload_hash,'hex') AS payload_hash,response_body FROM "bench_keycost_9146fce308bc4b94_requests_heap" WHERE idempotency_key=$1;
+```
+
+```text
+Seq Scan on bench_keycost_9146fce308bc4b94_requests_heap  (cost=0.00..3175.00 rows=1 width=107) (actual time=7.784..10.606 rows=1 loops=1)
+  Filter: ((idempotency_key)::text = 'cost:0000050000'::text)
+  Rows Removed by Filter: 99999
+  Buffers: shared hit=1925
+Planning Time: 0.037 ms
+Execution Time: 10.619 ms
+```
 
 ## Recorded assignment measurements
 
@@ -751,7 +1132,7 @@ The optional covering index was not adopted: it reduced bucket SQL p95 by 15.84%
 
 ### Remaining evidence limitations
 
-The comparison measures the optional index present versus absent while keeping required primary keys and foreign keys. Disabling planner index access is not dropping an index, nor does it measure mandatory-index write cost. Separate physically dropped-index write-cost measurements for mandatory indexes, plans with/without every lookup index, clean-clone reproduction, and final submission/PR work remain unverified. Measured relation sizes exclude WAL and some relations; compliance with the PDF's rough 500 MB disk budget is not established. Retained experiment copies require additional disk space.
+The comparison measures the optional index present versus absent while keeping required primary keys and foreign keys. Disabling planner index access is not dropping an index, nor does it measure mandatory-index write cost. Physically dropped-index comparisons for measurements, series and request keys are recorded separately above as direct write-kernel evidence, not full API ingest comparisons. Matching lookup plans with/without the three business primary keys are now embedded above. Full API ingest comparisons with physically dropped indexes, clean-clone reproduction, and final submission/PR work remain unverified. Measured relation sizes exclude WAL and some relations; compliance with the PDF's rough 500 MB disk budget is not established. Retained experiment copies require additional disk space.
 
 ### Recorded strategy/index comparison and raw plans
 
