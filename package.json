@@ -26,6 +26,7 @@
     "index:cost": "ts-node scripts/primary-index-cost.ts",
     "index:cost:remaining": "ts-node scripts/remaining-index-cost.ts",
     "index:plans": "ts-node scripts/index-lookup.ts",
+    "storage:measure": "npm run build && ts-node scripts/storage.ts",
     "report": "ts-node scripts/report.ts",
     "load:setup": "npm ci && ts-node scripts/setup-load.ts",
     "check": "npm run typecheck && npm run lint && npm run test && npm run test:e2e && npm run build"

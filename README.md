@@ -541,6 +541,111 @@ GROUP BY s.id, s.name
 ORDER BY s.id;
 ```
 
+### Storage and WAL measurement
+
+Wait until clean-clone verification and all other loads/benchmarks finish. This
+command **runs a new cold load**; do not run it concurrently with either session:
+
+```bash
+npm run storage:measure -- --database metrics_storage_final_01 --confirm-exclusive-cluster
+```
+
+Use a fresh, uniquely named local database other than the environment's main DB.
+The explicit database override may create it and applies existing migrations;
+it never resets an existing database. Application tables must be empty and no
+experiment/unrelated user tables may exist. The script builds and manages its
+own API process, uses the existing 2,000,000-point load (5,000 points/batch,
+eight writers), and preserves exact count/sum and aggregate verification. No API
+or schema changes. A smaller `--points` value is a smoke diagnostic only.
+
+`--confirm-exclusive-cluster` attests that no other sessions are loading data or
+running database tests on this PostgreSQL cluster; it cannot enforce isolation
+against external processes. Prefer a fresh dedicated PostgreSQL cluster for
+cleanest retained-WAL evidence. Do not start that cluster while another session
+is taking performance measurements on the same machine.
+
+Snapshots use core PostgreSQL SQL, not OS-specific filesystem tooling:
+
+- `pg_database_size`: total target database bytes, including its catalogs.
+- `pg_relation_size`, `pg_table_size`, `pg_indexes_size` and
+  `pg_total_relation_size`: main fork, table including auxiliary forks/TOAST,
+  indexes, and total relation storage. These overlap; do not add total to parts.
+- `pg_current_wal_insert_lsn` and `pg_wal_lsn_diff`: WAL generated across the
+  measurement interval, **cluster-wide**, not retained disk space.
+- `pg_ls_waldir`: sizes of WAL files currently retained by the entire cluster.
+
+The connection must have permission to call `pg_ls_waldir` (superuser or an
+appropriately privileged monitoring role). Permission is checked before the
+point load. No grants, PostgreSQL settings changes, checkpoints, vacuum, cleanup,
+volume inspection or new dependencies are performed. See the official
+[PostgreSQL function documentation](https://www.postgresql.org/docs/17/functions-admin.html).
+
+Before capture is after migrations/API startup but before creating the eight
+series. After capture follows the cold load and reconciliation. Background
+maintenance can contribute to WAL even with no other user writes. Snapshots are
+not peak usage, and retained WAL may shrink or stay unchanged through recycling.
+Database plus cluster-retained WAL is explicitly labelled: it includes preexisting
+cluster WAL, excludes other databases/shared files, and is not attributable
+per-database WAL or total cluster footprint. The PDF's roughly 500 MB including
+WAL is guidance; no hard pass/fail verdict or measured size is invented.
+
+Output: unique `artifacts/storage-<id>/before.json`, `after.json` where available,
+`report.json` and readable `REPORT.md`, plus manifest/load evidence and API log.
+Reports include exact bytes, display MiB, database growth, retained-WAL change,
+WAL generated and load reconciliation references. Failed loads or incomplete
+capture are reported as failures/unavailable, never zeros. The command exits
+nonzero on failure and retains data/artifacts for inspection. Databases are not
+dropped; use a new name for another cold run.
+
+#### Recorded storage results
+
+Both full-scale runs on 2026-10-09 completed with exactly 2,000,000 rows,
+matching per-series counts/exact sums and aggregate verification. No checkpoints,
+vacuum, WAL tuning or cleanup were forced. Values below are **decimal MB**
+(1,000,000 bytes), matching the PDF's approximate MB budget:
+
+| Endpoint measurement                     | Existing cluster | Fresh container and volume |
+| ---------------------------------------- | ---------------: | -------------------------: |
+| Database before                          |          7.92 MB |                    7.92 MB |
+| Database after                           |        180.54 MB |                  181.20 MB |
+| Database growth                          |        172.62 MB |                  173.28 MB |
+| Cluster WAL retained before              |        905.97 MB |                   33.55 MB |
+| Cluster WAL retained after               |        905.97 MB |                  436.21 MB |
+| Cluster WAL generated in interval        |        410.40 MB |                  411.22 MB |
+| Database plus retained cluster WAL after |      1,086.51 MB |              **617.40 MB** |
+
+Fresh-run exact combined bytes: **617,404,083** (588.80 MiB). This exceeds the
+rough 500 MB guideline by 117.40 MB; it is measured evidence, not a hard rubric
+failure or a claim of total cluster footprint. Other databases/shared files are
+excluded. Generated WAL is not added to retained WAL. The existing cluster's
+large preexisting WAL pool cannot be attributed to this dataset.
+
+Existing-cluster database: `metrics_storage_final_01`; measured
+2026-10-09T01:39:12.508Z; report
+`artifacts/storage-5591c6b1-9d4d-419e-ae5b-df4d4d04ba47/REPORT.md` and JSON.
+Fresh-cluster database: `metrics_storage_fresh_01`; measured
+2026-10-09T01:46:49.916Z; report
+`artifacts/storage-9da8e27c-0f31-4bb1-affa-a83835e807b1/REPORT.md` and JSON.
+The fresh measurement's main measurement fork was 104,423,424 bytes; table
+including auxiliary forks/TOAST was 104,488,960 bytes; indexes were 68,542,464
+bytes; total measurement relation was 173,031,424 bytes. Both reports retain
+LSNs, endpoint times, table details, machine and cold-load evidence. Embedded
+numbers remain available when ignored artifacts are absent from a clean clone.
+
+Fresh-container reproduction used the existing Compose file, a new project and
+new volume, without editing `.env` or touching the original container:
+
+```bash
+POSTGRES_PORT=55434 POSTGRES_USER=metrics POSTGRES_PASSWORD=metrics_local POSTGRES_DB=metrics docker compose -p metrics-storage-fresh-01 up -d --wait
+DATABASE_URL=postgresql://metrics:metrics_local@127.0.0.1:55434/metrics npm run storage:measure -- --database metrics_storage_fresh_01 --confirm-exclusive-cluster
+```
+
+Those names are now retained and loaded: for another clean run choose a new
+unused Compose project/volume name and an available port, and target the new
+container. A new container with an old volume is not a fresh cluster. Do not
+rerun into loaded tables, delete old volumes or change WAL settings merely to
+produce a smaller number. All benchmarks must run sequentially.
+
 ### Index rationale and remaining measured evidence
 
 Measurements primary-key write cost can be reproduced separately on isolated
