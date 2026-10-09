@@ -14,42 +14,87 @@ A backend service for ingesting timestamped measurements in batches and querying
 
 ## Project status
 
-All required API routes and business-schema migrations are implemented. Full two-million-point acceptance runs, SQL strategy/index experiments, and query optimization measurements are recorded below. The latest representative run for the retained implementation completed A–G correctness/recovery checks and passed throughput, row-count and memory targets, but failed both latency targets. This is not a claim of full assignment compliance.
+All required API routes and business-schema migrations are implemented. GitHub clean-clone verification of `50a072c` passed setup, migrations, 191 tests and A–G correctness/recovery checks. Its full cold load and matching idle benchmark passed throughput, exact rows and sampled RSS, but failed both latency targets. Later storage and report corrections passed local verification, including 202 tests; they were not part of that clean-clone snapshot. This is not a claim of full assignment compliance.
 
 Work is on `feat/ingest`; the submission must include an open pull request into `main`.
 
 ## Current target achievement
 
-**3 of 5 measured targets achieved.** These values describe the retained
-implementation, not the best result selected from experimental runs.
+**3 of 5 measured targets achieved.** These are the latest complete cold-load
+and matching idle-benchmark verification results, not the best experiment values.
 
 | Checkpoint                     | Assignment target  |             Achieved | Result |
 | ------------------------------ | ------------------ | -------------------: | ------ |
 | Stored rows                    | Exactly 2,000,000  |            2,000,000 | Pass   |
-| Fresh insertion throughput     | ≥20,000 points/sec | 50,570.24 points/sec | Pass   |
-| Latest p95 during fresh writes | ≤50 ms             |             78.92 ms | Fail   |
-| 30-day hourly bucket p95, idle | ≤150 ms            |            166.48 ms | Fail   |
-| API sampled peak RSS           | <512 MB            |           239.03 MiB | Pass   |
+| Fresh insertion throughput     | ≥20,000 points/sec | 44,615.49 points/sec | Pass   |
+| Latest p95 during fresh writes | ≤50 ms             |             91.36 ms | Fail   |
+| 30-day hourly bucket p95, idle | ≤150 ms            |            180.57 ms | Fail   |
+| API sampled peak RSS           | <512 MB            |            249.52 MB | Pass   |
 
-Source: full-scale unprofiled acceptance run
-`25b93ce8-9e25-4d77-9cef-88bc0c989cf2`, UTC `2026-10-08T02:53:20.681Z`, database
-`metrics_benchmark_without_hash_fast_path_01`. Workload: 2,000,000 points,
-5,000-point requests, eight writers, pool 12, JIT off. This cold run preceded
-adding the experimental covering index to that database. Timestamp and parameter
-encoding optimizations were enabled; hashing fast path and cooperative grouping
-are not retained. All A–G correctness/recovery checks passed, replay added zero
-rows and no errors were reported. This historical report used a 512 MiB memory
-threshold; observed RSS also meets the assignment's stricter 512 MB threshold.
-New RSS collection and acceptance Markdown use **512,000,000 bytes**, with MiB
-retained only as a display unit; old JSON evidence is not rewritten.
+Source: GitHub snapshot `50a072c`, dataset
+`40137ceb-2e29-46ae-a4db-97c926e013fa`, database `metrics_clean_load`, on a
+separate fresh Docker volume. Cold report: UTC `2026-10-09T00:51:00.554Z`;
+matching idle benchmark: UTC `2026-10-09T00:53:24.103Z`. Workload: 2,000,000
+points, 5,000/request, eight writers, pool 12, JIT off. Machine: Intel i3-7020U,
+four logical CPUs, 12,442,415,104 RAM bytes, Linux 6.8.0-51, Node 20.18.0,
+PostgreSQL 17.11 in Docker. All A–G correctness/recovery checks passed using
+the cold evidence plus subsequent replay/case/restart runs. Replay added zero
+rows. Exact cold RSS: **249,516,032 bytes** (237.96 MiB), independently below
+the literal 512 MB limit despite that snapshot's historical 512 MiB collector
+threshold. Current collection/Markdown uses **512,000,000 bytes**; old artifacts
+are not rewritten. See [clean-clone verification](docs/clean-clone-verification.md).
+
+Prior retained-implementation baseline `25b93ce8`, measured 2026-10-08, was
+50,570.24 points/sec, latest write p95 78.92 ms, idle bucket p95 166.48 ms and
+RSS 239.03 MiB. It remains in the experiment history below. The verification
+rerun is not a new optimization or proof of causal performance regression.
+Later storage runs did not measure matching idle buckets, so they do not replace
+this complete five-target table. Fresh-cluster database plus retained WAL was
+**617.40 MB**, above the PDF's rough storage guidance, documented separately.
 
 Update this table and its source run together after a new full-scale, unprofiled
-acceptance measurement of adopted changes. Preserve previous results in the
+acceptance or complete cold/idle verification of the implementation. Preserve previous results in the
 measurement history below. Do not replace values with replay throughput,
 profiling results, post-maintenance timings or unadopted experiments. This table
 is maintained in README; generating an artifact report does not update it
 automatically. Full assignment compliance includes evidence beyond these five
 targets and is not established by correctness success alone.
+
+## Verification status and remaining work
+
+- Core implementation and A–G correctness: verified. Clean-clone setup/checks
+  at `50a072c`: passed; detailed portable summary is linked above.
+- Latest local verification through `60eb96d`: 176 unit and 26 real PostgreSQL/
+  child-process tests passed (202), plus typecheck, lint, build and formatting.
+  A fresh GitHub-clone run of these newer changes has not been performed.
+- HTTP index experiment through its verification transport fix:
+  193 unit and 29 real PostgreSQL/child-process tests passed (222), plus
+  typecheck, lint, build and formatting.
+  Both 80-point/20-sample schema variants passed. Full-scale paired results are
+  recorded separately, not substituted for production target evidence above.
+- Report-layout follow-up: 195 unit tests and three focused real-PostgreSQL
+  index-command E2E tests passed, plus typecheck, lint, build and formatting.
+  Remaining normal API/recovery tests retain the prior result above; they were
+  not rerun for this report-only layout change.
+- Performance: latest-during-writes and idle hourly buckets remain over budget;
+  read availability passed, and during-write bucket latency is also recorded.
+- Storage: fresh-cluster endpoint database plus retained WAL exceeds the rough
+  500 MB guidance. This is not peak usage or a full cluster/disk measurement.
+- Index evidence: physical-PK write-kernel costs and matching lookup plans are
+  recorded; the index-disabled 720-bucket query timed out. Full API ingest
+  throughput with correctness indexes physically absent is not measured. The
+  separate HTTP index experiment has full-scale indexed/unindexed write
+  measurements with exact reconciliation; unindexed read/aggregate/plan checks
+  timed out. See [paired results and limitations](docs/index-http-results.md).
+- PDF §7 source audit: completed; six missing exported-symbol JSDoc comments
+  added. See [audit scope and findings](docs/clean-code-audit.md).
+- Final work: close the indexing evidence gaps, improve/remeasure latency,
+  and update the PR/submission evidence. The
+  completed reporting fixes change labels/thresholds, not measured performance.
+
+Sections below retain dated historical experiments, raw plans and failures.
+Their old statuses describe the time of each experiment; this section and the
+source-labelled target table are the current consolidated status.
 
 ## Local setup
 
@@ -161,7 +206,7 @@ npm run test:e2e
 npm run build
 ```
 
-`npm run check` combines typecheck, lint, unit tests, end-to-end tests, and build. Start PostgreSQL first and set TEST_DATABASE_URL to the separate test database. API tests apply migrations automatically and remove only their own data. Tests cover request replay/mismatch, concurrent duplicate and conflicting batches, 5000-point partial failure, out-of-order arrival, microsecond identity, bucket boundaries/nulls, stats, and overload. The restart test launches real Node processes, SIGTERMs one while it is blocked mid-batch, checks rollback, and retries after restart. It does not yet reproduce a two-million-point interrupted load.
+`npm run check` combines typecheck, lint, unit tests, end-to-end tests, and build. Start PostgreSQL first and set TEST_DATABASE_URL to the separate test database. API tests apply migrations automatically and remove only their own data. Tests cover request replay/mismatch, concurrent duplicate and conflicting batches, 5000-point partial failure, out-of-order arrival, microsecond identity, bucket boundaries/nulls, stats, and overload. The focused restart test launches real Node processes, SIGTERMs one while it is blocked mid-batch, checks rollback, and retries after restart on a smaller dataset. The separate acceptance scenario G reproduces the full two-million-point interruption/resume/replay; that full-scale recovery passed in clean-clone verification.
 
 Pure numeric, timestamp, grouping, hashing, and configuration tests run without database mocks. End-to-end tests start the application themselves; no separately running NestJS process is needed.
 
@@ -658,6 +703,114 @@ produce a smaller number. All benchmarks must run sequentially.
 
 ### Index rationale and remaining measured evidence
 
+#### HTTP comparison with and without business indexes
+
+The following commands create **two separate fresh experiment databases**, apply
+the usual migrations there, and start their own benchmark-only compiled API.
+No separately running API is needed. Use the existing local Docker PostgreSQL,
+configured `DATABASE_URL` and `API_TOKEN`; database-creation permission is needed.
+Run them sequentially, with no other heavy tests or loads running:
+
+```bash
+npm run index:benchmark -- --variant indexed --database metrics_index_http_indexed_01 --points 2000000 --samples 100
+npm run index:benchmark -- --variant unindexed --database metrics_index_http_unindexed_01 --points 2000000 --samples 100
+```
+
+For small local verification, replace `--points 2000000 --samples 100` with
+`--points 80 --samples 20`, keeping distinct fresh database names. Existing
+databases, remote hosts and the configured main database are refused; use a new
+name for each subsequent run. Nothing is deleted. Allow space for two datasets
+and their WAL. PostgreSQL resources and artifacts remain available for inspection.
+
+- `indexed`: retains `series_pkey`, `measurements_pkey` and
+  `ingest_requests_pkey`.
+- `unindexed`: physically drops those three business primary keys; it does not
+  merely disable planner index scans.
+- Both variants remove the measurement foreign key, because its referenced
+  series primary key cannot otherwise be removed. Both retain identical types,
+  identities, NOT NULL and CHECK rules. Migration bookkeeping is excluded.
+
+Both variants use **the same benchmark-only plain INSERT HTTP path**, with normal
+authentication, admission, hashing, validation, grouping, encoding and atomic
+transactions. Series creation, ingestion, latest, buckets, stats, health and
+readiness all use the selected experiment database. The normal `start`, `load`
+and `acceptance` commands do not activate this path. There is no public HTTP
+index flag.
+
+The generator sends unique points and keys only. Writes are never retried:
+ambiguous responses must not silently duplicate data. Replay, resume, request
+idempotency and cross-request duplicate/conflict guarantees are **not tested or
+supported by this experiment**. The indexed mode is also experimental plain
+insertion, not the normal ON CONFLICT API. Normal acceptance remains separate.
+
+Each command prints `index_http_report` with its `variant`, database, JSON path
+and `markdownPath`. Open:
+
+```text
+artifacts/index-http-indexed-<run-id>/REPORT.md
+artifacts/index-http-unindexed-<run-id>/REPORT.md
+```
+
+The reports prominently say **WITH INDEXES** or **WITHOUT BUSINESS INDEXES** and
+include actual index/constraint definitions before and after measurement,
+settings/machine, HTTP throughput/write latency, concurrent and idle read latency,
+API-process RSS, exact per-series reconciliation, route/aggregate checks and real
+bucket `EXPLAIN (ANALYZE, BUFFERS)` output. JSON retains statuses, failures and
+attempted versus requested sample counts. Report generation happens after timing.
+
+Acceptance and index reports share the same layout: run details, the five-row
+`Checkpoint | Actual | Target | Result` performance table, additional
+measurements, A–G scenarios, machine, errors/pending verification and evidence.
+Index targets are experimental comparisons only, never normal API certification.
+Index scenarios B/C/D/E/G are **Not applicable**, not passing checks. Acceptance
+labels the normal API and its expected production-index schema; it does not
+independently inspect physical index definitions.
+
+New runs automatically generate this format. To render an existing index JSON
+without database access or another load:
+
+```bash
+npm run report -- --input "artifacts/index-http-indexed-ba088dda-4124-412b-9316-8e5ad9791689/report.json"
+```
+
+Substitute your run's JSON path. The command prints a new
+`REPORT-regenerated-<id>.md` beside it, preserving original JSON and REPORT.md.
+
+Idle sampling stops a category after its first failure; skipped samples are not
+successes. The exact bucket query retains its normal API timeout, and the separate
+EXPLAIN has a 30-second experiment timeout. Without indexes it may fail: the
+report records the timeout instead of claiming a completed plan. The command
+exits nonzero after preserving a failed/partial report. Compare write throughput
+only when its complete/reconciled write check passes, even if a separate read or
+plan failed. Full production performance compliance is never inferred from this
+experiment, and combined-index rates do not isolate each index's individual cost.
+
+Read-only count/sum and hourly-aggregate correctness verification uses a separate
+client outside latency timing. It may retry a transport failure once, but never
+an HTTP error such as 429/503. `verificationReads` in JSON and Markdown records
+failed and recovered attempts, routes and transport codes. Measured reads, series
+creation and ingest still use zero retries. A persistent transport error or any
+aggregate mismatch continues to fail the run.
+
+The first indexed two-million-point run (`05a0d0f5`, 2026-10-09) stored/reconciled
+all rows with no write errors but failed verification with generic `fetch failed`.
+The initial implementation had incorrectly applied the zero-write-retry policy
+to correctness reads too. A subsequent read-only recheck on that same database
+reproduced `UND_ERR_SOCKET` on the first bucket request, recovered with one retry,
+and verified all eight series' hourly aggregates. Row count remained 2,000,000;
+no inserts were performed. The original failed report is retained unchanged.
+See [failure investigation and fix](docs/index-http-verification-fix.md).
+
+Implementation was verified with two 80-point/20-sample real-PostgreSQL command
+runs, including read routes, exact reconciliation, physical index counts and
+existing-database refusal. The subsequent full-scale pair is recorded in
+[HTTP index comparison results](docs/index-http-results.md): 67,513.88 points/sec
+indexed versus 51,838.31 unindexed, both exactly reconciled; unindexed reads and
+plans timed out. This mixed read/write trial does not isolate maintenance cost. Run order,
+cache/checkpoints and concurrent readers affect measurements. See the
+[approved design](docs/index-http-benchmark-design.md) and
+[implementation/verification plan](docs/index-http-benchmark-plan.md).
+
 Measurements primary-key write cost can be reproduced separately on isolated
 tables in an already loaded local benchmark database:
 
@@ -1115,7 +1268,9 @@ Restart semantics: posix-sigterm; POSIX SIGTERM recovery verified: Pass.
 Acceptance error: None.
 Load errors: \[\].
 
-- Independently verified: 97 tests, typecheck, lint and build passed. Clean-clone reproduction remains unverified.
+- At this historical baseline: 97 tests, typecheck, lint and build passed;
+  clean-clone reproduction had not yet been verified. It subsequently passed
+  at `50a072c`, as recorded in the current verification section above.
 - Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
 
 Replay wall time for this historical run: **11.15 seconds**; no new points were stored. RSS is reported in MiB (1,048,576 bytes); 242.34 MiB is also below the PDF's literal 512 MB limit. This historical harness used a 512 MiB threshold; the current collector and Markdown renderer now enforce 512,000,000 bytes. Old reports remain unchanged, so historical values between those thresholds need separate review.
@@ -1146,7 +1301,7 @@ The original thirty-day bucket query grouped 250,000 points using per-row UTC da
 
 With JIT already off on the same two-million-point data, interleaved before/after SQL execution times were 489.369/170.817, 361.223/194.626 and 363.211/174.719 ms. All eight series' before/after API responses and independent aggregate checks matched. These are three SQL samples, not HTTP p95. Complete raw before/after JSON EXPLAIN output is preserved in [measurement history](docs/measurement-history.md#rewrite-diagnostic).
 
-Latest full-scale HTTP bucket p95 is 174.00 ms (target ≤150 ms). Latest HTTP p95 during writes is 177.75 ms versus 5.38 ms idle (target ≤50 ms during writes). Both cooperative runs improved measured latest latency versus the pre-optimization baseline but did not meet either latency budget. Synchronous ingest CPU work is a demonstrated contributor; SQL execution, pool waiting, remaining pg processing and load-client delays still require separate instrumentation.
+At this historical cooperative rerun, full-scale HTTP bucket p95 was 174.00 ms (target ≤150 ms), and latest p95 during writes was 177.75 ms versus 5.38 ms idle (target ≤50 ms during writes). Both cooperative runs improved measured latest latency versus the pre-optimization baseline but did not meet either latency budget. These are not the current headline measurements; refer to the source-labelled table above. Synchronous ingest CPU work is a demonstrated contributor; SQL execution, pool waiting, remaining pg processing and load-client delays still require separate instrumentation.
 
 ### Cooperative processing repeat-run validation
 

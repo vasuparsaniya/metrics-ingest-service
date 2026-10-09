@@ -4,6 +4,37 @@ import { IngestResponse } from '../../src/ingest/ingest.types';
 import { isRecord } from '../../src/ingest/ingest.validation';
 import { RequestMetrics } from './types';
 
+/** Preserves transport diagnostics without logging authorization, keys or row bodies. */
+export class ApiTransportError extends Error {
+  readonly transportCode: string | null;
+  readonly route: string;
+
+  constructor(
+    readonly method: 'GET' | 'POST',
+    path: string,
+    cause: unknown,
+  ) {
+    const nested = isRecord(cause) ? cause.cause : undefined;
+    const candidate = isRecord(nested)
+      ? nested.code
+      : isRecord(cause)
+        ? cause.code
+        : undefined;
+    const code =
+      typeof candidate === 'string' && /^[A-Z0-9_]+$/.test(candidate)
+        ? candidate
+        : null;
+    const route = path.split('?')[0] ?? path;
+    super(
+      `${method} ${route} transport failed: ${cause instanceof Error ? cause.message : 'unknown error'}${code ? ` (${code})` : ''}`,
+      { cause },
+    );
+    this.name = 'ApiTransportError';
+    this.transportCode = code;
+    this.route = route;
+  }
+}
+
 /** Narrows ingest responses before using counts as correctness evidence. */
 export function ingestResult(value: unknown): IngestResponse {
   if (
@@ -36,6 +67,7 @@ export class ApiClient {
   constructor(
     readonly url: string,
     private readonly token: string,
+    private readonly defaultRetries = 8,
   ) {}
 
   async request(
@@ -43,7 +75,7 @@ export class ApiClient {
     metrics: RequestMetrics,
     body?: unknown,
     key?: string,
-    maxRetries = 8,
+    maxRetries = this.defaultRetries,
   ): Promise<unknown> {
     const serialized = body === undefined ? undefined : JSON.stringify(body);
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -67,7 +99,12 @@ export class ApiClient {
       } catch (error: unknown) {
         metrics.failed.push(performance.now() - started);
         metrics.statuses.transport = (metrics.statuses.transport ?? 0) + 1;
-        if (attempt === maxRetries) throw error;
+        if (attempt === maxRetries)
+          throw new ApiTransportError(
+            body === undefined ? 'GET' : 'POST',
+            path,
+            error,
+          );
         metrics.retries += 1;
         await delay(Math.min(100 * 2 ** attempt, 2000));
         continue;

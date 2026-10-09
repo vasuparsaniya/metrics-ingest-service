@@ -5,15 +5,18 @@ import { RSS_TARGET_BYTES } from './rss';
 
 type Status = 'Pass' | 'Fail' | 'Not measured';
 
+/** Keeps incomplete report evidence unknown until the rendering boundary narrows it. */
 export function at(value: unknown, ...keys: string[]): unknown {
   for (const key of keys) value = isRecord(value) ? value[key] : undefined;
   return value;
 }
+/** Excludes non-finite or missing evidence rather than displaying a fabricated zero. */
 export function number(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value)
     ? value
     : undefined;
 }
+/** Escapes recorded evidence so it cannot alter the Markdown report structure. */
 export function text(value: unknown): string {
   if (value === undefined || value === null) return 'Not recorded';
   const rendered =
@@ -27,6 +30,7 @@ export function text(value: unknown): string {
 function flag(value: unknown): Status {
   return value === true ? 'Pass' : value === false ? 'Fail' : 'Not measured';
 }
+/** Rounds display metrics only, keeping absent measurements visibly distinct from zero. */
 export function numeric(value: unknown, suffix: string): string {
   const n = number(value);
   return n === undefined ? 'Not measured' : `${n.toFixed(2)}${suffix}`;
@@ -205,6 +209,8 @@ export function renderAcceptanceReport(
   const machine = at(load, 'machine');
   return [
     '# Acceptance report',
+    '',
+    'API mode: Normal API — production indexes (expected default schema). Physical index definitions are not inspected by this report.',
     '',
     `Acceptance execution: ${flag(input.passed)}. Performance: ${fresh ? overall : 'Not measured'}.`,
     '',

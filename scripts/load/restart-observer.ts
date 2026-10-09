@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
+/** Carries blocker evidence needed to distinguish the target batch from unrelated writes. */
 export interface InsertActivity {
   pid: number;
   waitEventType: string | null;
@@ -41,6 +42,7 @@ export async function waitForTargetLock(options: {
   );
 }
 
+/** Preserves the failed recovery report location while retaining the original cause. */
 export class RestartScenarioError extends Error {
   constructor(
     message: string,

@@ -31,6 +31,7 @@ export async function workload(
     reads?: boolean;
     shouldStop?: () => boolean;
     onBatch?: (completed: number) => Promise<void>;
+    maxRetries?: 0 | 8;
   } = {},
 ): Promise<WorkloadResult> {
   const ingest = requestMetrics();
@@ -83,7 +84,7 @@ export async function workload(
             ingest,
             { points },
             batchKey(manifest, batch),
-            options.shouldStop ? 0 : 8,
+            options.shouldStop ? 0 : (options.maxRetries ?? 8),
           ),
         );
         if (

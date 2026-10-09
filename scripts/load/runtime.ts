@@ -11,6 +11,7 @@ import { applyMigrations } from '../migrate';
 import { ApiClient } from './http';
 import { postgresSessionOptions } from '../../src/database/session-options';
 import { saveCpuProfile } from './cpu-profile';
+import { IndexHttpVariant } from '../../src/benchmark/index-http-schema';
 
 /** Uses the configured database unless an explicit name override is supplied. */
 export function benchmarkUrl(
@@ -85,8 +86,12 @@ export async function startServer(
   databaseUrl: string,
   logPath: string,
   cpuProfilePath?: string,
+  indexHttpVariant?: IndexHttpVariant,
 ): Promise<ManagedServer> {
-  await access(resolve('dist/main.js'));
+  const entrypoint = indexHttpVariant
+    ? 'dist/benchmark/index-http-main.js'
+    : 'dist/main.js';
+  await access(resolve(entrypoint));
   const socket = createServer();
   socket.listen(0, '127.0.0.1');
   await once(socket, 'listening');
@@ -111,7 +116,7 @@ export async function startServer(
       ...(cpuProfilePath
         ? ['--require', resolve('dist/benchmark/cpu-profile-preload.js')]
         : []),
-      resolve('dist/main.js'),
+      resolve(entrypoint),
     ],
     {
       env: {
@@ -119,6 +124,12 @@ export async function startServer(
         DATABASE_URL: databaseUrl,
         PORT: String(address.port),
         API_TOKEN: token,
+        ...(indexHttpVariant
+          ? {
+              METRICS_INDEX_HTTP_VARIANT: indexHttpVariant,
+              METRICS_MAIN_DATABASE_URL: process.env.DATABASE_URL,
+            }
+          : {}),
         ...(cpuProfilePath
           ? { METRICS_BENCHMARK_CPU_PROFILE_PATH: cpuProfilePath }
           : {}),
@@ -134,7 +145,11 @@ export async function startServer(
   let profileSaved = false;
   const server: ManagedServer = {
     child,
-    api: new ApiClient(`http://127.0.0.1:${address.port}`, token),
+    api: new ApiClient(
+      `http://127.0.0.1:${address.port}`,
+      token,
+      indexHttpVariant ? 0 : 8,
+    ),
     exited,
     forcedKill: false,
     cpuProfilePath,
