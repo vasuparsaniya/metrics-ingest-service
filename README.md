@@ -38,8 +38,10 @@ Source: full-scale unprofiled acceptance run
 adding the experimental covering index to that database. Timestamp and parameter
 encoding optimizations were enabled; hashing fast path and cooperative grouping
 are not retained. All A–G correctness/recovery checks passed, replay added zero
-rows and no errors were reported. The report uses a 512 MiB memory threshold;
-observed RSS also meets the assignment's stricter 512 MB threshold.
+rows and no errors were reported. This historical report used a 512 MiB memory
+threshold; observed RSS also meets the assignment's stricter 512 MB threshold.
+New RSS collection and acceptance Markdown use **512,000,000 bytes**, with MiB
+retained only as a display unit; old JSON evidence is not rewritten.
 
 Update this table and its source run together after a new full-scale, unprofiled
 acceptance measurement of adopted changes. Preserve previous results in the
@@ -526,6 +528,14 @@ The generator persists a reproducible manifest containing series IDs, generation
 429/503 and network failures have bounded retries with unchanged bodies/keys. Every attempt records its duration and status; replay throughput reports zero newly inserted points/sec rather than summing cached accepted counts. Reports also show processed-input throughput and replay wall time. Reader loops do not retry, so failed reads remain visible. Average verification follows the documented finite PostgreSQL NUMERIC division contract; count/sum/min/max/last and replay equality are independently checked without floating-point value arithmetic.
 
 The managed **application process** RSS is sampled every 100 ms using its own `process.memoryUsage.rss()` over IPC (target: below 512 MB); Docker database/generator memory is not substituted. Measurement includes immediate and final samples while the child is alive. Reports include PID, source, sampling count, final-sample availability, and telemetry errors; missing telemetry is null, never invented zero memory. A terminated child retains its readings without waiting for a final sample it cannot send. Report CPU, RAM, PostgreSQL version, Docker usage, actual throughput, replay duration, row counts, both latency percentiles, and peak sampled RSS. Percentiles use nearest rank; successful and failed attempt durations/statuses are reported separately. Cold-load readers rotate across all eight series, run independently, and issue a request per category with a 100 ms pause. The range has 720 hourly buckets per series. A small run's metrics are verification evidence only. Full-scale measurements are recorded below; both latency targets remain unmet.
+
+Acceptance Markdown labels read timings from the recorded mode: fresh writes,
+replay, or resume. Replay/resume runs remain `Not measured` for fresh full-scale
+performance certification; they never substitute for cold-write scenario F.
+Current RSS collector and renderer enforce **<512,000,000 bytes**. Actual RSS may
+be displayed in MiB, but compliance is checked in decimal bytes. Historical JSON
+and Markdown are retained unchanged; regenerating a summary is a separate,
+explicit operation, not a new benchmark measurement.
 
 ### Reconciliation SQL
 
@@ -1108,7 +1118,7 @@ Load errors: \[\].
 - Independently verified: 97 tests, typecheck, lint and build passed. Clean-clone reproduction remains unverified.
 - Failed performance targets require investigation and a new measurement after optimization. Do not treat replay throughput as fresh insertion throughput.
 
-Replay wall time for this latest run: **11.15 seconds**; no new points were stored. RSS is reported in MiB (1,048,576 bytes); 242.34 MiB is also below the PDF's literal 512 MB limit. The harness uses a 512 MiB threshold, so future results between 512 MB and 512 MiB need separate review.
+Replay wall time for this historical run: **11.15 seconds**; no new points were stored. RSS is reported in MiB (1,048,576 bytes); 242.34 MiB is also below the PDF's literal 512 MB limit. This historical harness used a 512 MiB threshold; the current collector and Markdown renderer now enforce 512,000,000 bytes. Old reports remain unchanged, so historical values between those thresholds need separate review.
 
 ### Previous measurements
 
@@ -1237,7 +1247,7 @@ The optional covering index was not adopted: it reduced bucket SQL p95 by 15.84%
 
 ### Remaining evidence limitations
 
-The comparison measures the optional index present versus absent while keeping required primary keys and foreign keys. Disabling planner index access is not dropping an index, nor does it measure mandatory-index write cost. Physically dropped-index comparisons for measurements, series and request keys are recorded separately above as direct write-kernel evidence, not full API ingest comparisons. Matching lookup plans with/without the three business primary keys are now embedded above. Full API ingest comparisons with physically dropped indexes, clean-clone reproduction, and final submission/PR work remain unverified. Measured relation sizes exclude WAL and some relations; compliance with the PDF's rough 500 MB disk budget is not established. Retained experiment copies require additional disk space.
+The comparison measures the optional index present versus absent while keeping required primary keys and foreign keys. Disabling planner index access is not dropping an index, nor does it measure mandatory-index write cost. Physically dropped-index comparisons for measurements, series and request keys are recorded separately above as direct write-kernel evidence, not full API ingest comparisons. Matching lookup plans with/without the three business primary keys are now embedded above. Full API ingest comparisons with physically dropped indexes and final submission/PR updates remain separate tasks. Clean-clone correctness at 50a072c was subsequently verified; newer storage/report changes were not part of that snapshot. The fresh-cluster storage section above records database plus retained WAL at 617.40 MB, above the rough 500 MB guideline; these earlier comparison relation sizes alone exclude WAL. Retained experiment copies require additional disk space.
 
 ### Recorded strategy/index comparison and raw plans
 

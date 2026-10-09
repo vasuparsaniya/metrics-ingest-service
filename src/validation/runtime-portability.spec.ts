@@ -3,10 +3,20 @@ import {
   rssReading,
   monitorRss,
   terminationSemantics,
+  RSS_TARGET_BYTES,
+  rssTargetPass,
 } from '../../scripts/load/rss';
 import { npmInvocation } from '../../scripts/setup-load';
 
 describe('portable benchmark process tools', () => {
+  it('uses literal 512 MB and never MiB for compliance', () => {
+    expect(RSS_TARGET_BYTES).toBe(512000000);
+    expect(rssTargetPass(511999999, [])).toBe(true);
+    expect(rssTargetPass(512000000, [])).toBe(false);
+    expect(rssTargetPass(520000000, [])).toBe(false);
+    expect(rssTargetPass(null, [])).toBeNull();
+    expect(rssTargetPass(1000000, ['missing final sample'])).toBe(false);
+  });
   it('accepts only RSS from the measured API PID and measurement window', () => {
     const reading = {
       kind: 'rss:sample',

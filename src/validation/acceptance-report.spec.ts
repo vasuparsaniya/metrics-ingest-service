@@ -31,6 +31,46 @@ const report = {
 };
 
 describe('readable acceptance report', () => {
+  it.each(['replay', 'resume'])(
+    'labels actual %s reads without claiming fresh writes',
+    (mode) => {
+      const md = renderAcceptanceReport(
+        {
+          ...report,
+          results: {
+            ...report.results,
+            A: { report: { ...report.results.A.report, mode } },
+          },
+        },
+        path,
+      );
+      expect(md).toContain(`Latest p95 during ${mode}`);
+      expect(md).toContain(`Bucket p95 during ${mode}`);
+      expect(md).not.toContain('during fresh writes');
+      expect(md).toContain('Performance: Not measured');
+    },
+  );
+  it.each([512000000, 520000000])(
+    'fails literal MB memory threshold at %s bytes',
+    (peakBytes) => {
+      const md = renderAcceptanceReport(
+        {
+          ...report,
+          results: {
+            ...report.results,
+            A: {
+              report: {
+                ...report.results.A.report,
+                memory: { peakBytes, errors: [] },
+              },
+            },
+          },
+        },
+        path,
+      );
+      expect(md).toMatch(/API sampled peak RSS.*<512 MB.*Fail/);
+    },
+  );
   it('does not confuse correctness success with performance compliance', () => {
     const md = renderAcceptanceReport(report, path);
     expect(md).toContain('Performance: Fail');

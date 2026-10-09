@@ -1,6 +1,19 @@
 import { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
+/** PDF memory budget in decimal bytes; MiB is used only for display. */
+export const RSS_TARGET_BYTES = 512_000_000;
+
+/** Evaluates observed bytes against the literal budget, preserving missing telemetry. */
+export function rssTargetPass(
+  peakBytes: number | null,
+  errors: readonly string[],
+): boolean | null {
+  return peakBytes === null
+    ? null
+    : errors.length === 0 && peakBytes < RSS_TARGET_BYTES;
+}
+
 /** Validates self-measurement messages from only the selected API process and run. */
 export function rssReading(
   message: unknown,
@@ -98,10 +111,8 @@ export function monitorRss(child: ChildProcess) {
         samples,
         peakBytes: samples ? peakBytes : null,
         finalSampleReceived,
-        targetBytes: 512 * 1024 * 1024,
-        passes: samples
-          ? errors.length === 0 && peakBytes < 512 * 1024 * 1024
-          : null,
+        targetBytes: RSS_TARGET_BYTES,
+        passes: rssTargetPass(samples ? peakBytes : null, errors),
         errors: [...errors],
       };
     },

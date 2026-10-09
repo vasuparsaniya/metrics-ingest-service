@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { isRecord } from '../../src/ingest/ingest.validation';
+import { RSS_TARGET_BYTES } from './rss';
 
 type Status = 'Pass' | 'Fail' | 'Not measured';
 
@@ -45,6 +46,15 @@ export function renderAcceptanceReport(
   const results = input.results;
   const load = at(results, 'A', 'report');
   const replay = at(results, 'B', 'report');
+  const mode = at(load, 'mode');
+  const readPhase =
+    mode === 'cold'
+      ? 'fresh writes'
+      : mode === 'replay'
+        ? 'replay'
+        : mode === 'resume'
+          ? 'resume'
+          : 'unrecorded load mode';
   const fresh =
     at(load, 'mode') === 'cold' && at(load, 'settings', 'points') === 2000000;
   const statuses: Status[] = [];
@@ -99,7 +109,7 @@ export function renderAcceptanceReport(
       ? 'Fail'
       : threshold(value, (n) => n <= limit);
   add(
-    'Latest p95 during fresh writes',
+    `Latest p95 during ${readPhase}`,
     numeric(latest, ' ms'),
     '≤50 ms',
     latencyStatus(latest, at(load, 'reads', 'latest'), 50),
@@ -115,10 +125,10 @@ export function renderAcceptanceReport(
   add(
     'API sampled peak RSS',
     numeric(peak === undefined ? undefined : peak / 1048576, ' MiB'),
-    '<512 MiB',
+    '<512 MB (512,000,000 bytes)',
     Array.isArray(memoryErrors) && memoryErrors.length
       ? 'Not measured'
-      : threshold(peak, (n) => n < 536870912),
+      : threshold(peak, (n) => n < RSS_TARGET_BYTES),
   );
   const overall = statuses.includes('Fail')
     ? 'Fail'
@@ -219,7 +229,7 @@ export function renderAcceptanceReport(
     '## Additional measurements',
     '',
     `- Write duration: ${numeric(number(at(load, 'wallMs')) === undefined ? undefined : Number(at(load, 'wallMs')) / 1000, ' seconds')}.`,
-    `- Bucket p95 during fresh writes: ${numeric(at(load, 'reads', 'buckets', 'success', 'p95Ms'), ' ms')}.`,
+    `- Bucket p95 during ${readPhase}: ${numeric(at(load, 'reads', 'buckets', 'success', 'p95Ms'), ' ms')}.`,
     `- Latest p95, idle: ${numeric(at(results, 'F', 'idle', 'latest', 'success', 'p95Ms'), ' ms')}.`,
     `- p95 degradation, latest / buckets: ${numeric(at(results, 'F', 'p95DegradationPercent', 'latest'), '%')} / ${numeric(at(results, 'F', 'p95DegradationPercent', 'buckets'), '%')}.`,
     `- Replay newly stored rows: ${text(at(replay, 'newlyStoredRows'))}; processed input: ${numeric(at(replay, 'processedInputPointsPerSecond'), ' points/sec')}. Cached accepted responses are not new inserts.`,
